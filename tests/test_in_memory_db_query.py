@@ -12,6 +12,7 @@ import numpy as np
 from fastaai.fastaai import db_query
 from fastaai.fastaai import flatten_cached_targets
 from fastaai.fastaai import generate_accessions_index
+from fastaai.m10 import create_stats_table
 
 
 def _create_minimal_database(database_path: Path) -> None:
@@ -48,6 +49,15 @@ def _create_minimal_database(database_path: Path) -> None:
 		connection.executemany(
 			f"INSERT INTO {accession} VALUES (?, ?)",
 			[(kmer, genomes.tobytes()) for kmer, genomes in kmer_genomes.items()],
+		)
+		#M10 databases also store per-marker window counts and compositions.
+		create_stats_table(connection)
+		connection.executemany(
+			"INSERT INTO genome_acc_stats VALUES (?, ?, ?, ?, ?)",
+			[
+				(genome, accession_id, len(kmers), np.ones(10, dtype = np.int32).tobytes(), f"protein_{genome}")
+				for genome, kmers in genome_kmers.items()
+			],
 		)
 
 
@@ -97,7 +107,7 @@ class InMemoryDbQueryTests(unittest.TestCase):
 			self.assertEqual(len(result_files), 2)
 			for result_file in result_files:
 				content = result_file.read_text(encoding = "ascii")
-				self.assertIn("query\ttarget\tavg_jacc_sim", content)
+				self.assertIn("query\ttarget\tshared_SCPs\tP_hat", content)
 
 
 if __name__ == "__main__":
