@@ -20,3 +20,21 @@ def encode(sequence: str) -> Tuple[np.ndarray, int, np.ndarray]:
     windows = windows[np.all(windows >= 0, axis=1)]
     words = np.unique(windows @ POWERS).astype(np.int32)
     return words, len(windows), counts
+
+
+def hmm_path() -> str:
+    import importlib.util
+    from pathlib import Path
+
+    package = importlib.util.find_spec("fastaai")
+    return str(
+        Path(package.origin).parent / "00.Libraries/01.SCG_HMMs/Complete_SCG_DB.hmm"
+    )
+
+
+def create_stats_table(cursor) -> None:
+    cursor.execute(
+        "CREATE TABLE IF NOT EXISTS genome_acc_stats "
+        "(genome INTEGER, accession INTEGER, windows INTEGER, "
+        "group_counts BLOB, protein TEXT, PRIMARY KEY (genome, accession))"
+    )

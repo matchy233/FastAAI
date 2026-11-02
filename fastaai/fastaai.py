@@ -926,6 +926,7 @@ class input_file:
 		
 		self.protein_count = 0
 		self.protein_kmer_count = {}
+		self.protein_stats = {}
 		
 		self.trans_table = None
 		self.start_time = None
@@ -1115,6 +1116,7 @@ class input_file:
 			self.prepared_proteins, deflines = read_fasta(self.protein)
 		
 		self.protein_kmer_count = {}
+		self.protein_stats = {}
 		self.best_hits_kmers = {}
 		
 		if self.crystalize:
@@ -1128,7 +1130,8 @@ class input_file:
 				if self.crystalize:
 					crystal_record.append(str(protein)+"\t"+str(accession)+"\t"+str(self.prepared_proteins[protein])+"\n")
 				
-				kmer_set = self.unique_kmer_simple_key(self.prepared_proteins[protein])
+				kmer_set, windows, counts = m10.encode(self.prepared_proteins[protein])
+				self.protein_stats[accession] = (windows, counts, protein)
 				self.protein_kmer_count[accession] = kmer_set.shape[0]
 				self.protein_count += 1
 				self.best_hits_kmers[accession] = kmer_set
@@ -1271,26 +1274,7 @@ def prepare_directories(output, status, build_or_query, make_crystals = False):
 	return preparation_successful	
 
 def find_hmm():
-	hmm_path = None
-	try:
-		#Try to locate the data bundled as it would be with a pip/conda install.
-		script_path = os.path.dirname(sys.modules['fastAAI_HMM_models'].__file__)
-		if len(script_path) == 0:
-			script_path = "."
-		hmm_complete_model = os.path.abspath(os.path.normpath(script_path + '/00.Libraries/01.SCG_HMMs/Complete_SCG_DB.hmm'))
-		hmm_path = str(hmm_complete_model)
-		#Check that the file exists or fail to the except.
-		fh = open(hmm_path)
-		fh.close()
-	except:
-		#Look in the same dir as the script; old method/MiGA friendly
-		script_path = os.path.dirname(__file__)
-		if len(script_path) == 0:
-			script_path = "."
-		hmm_complete_model = os.path.abspath(os.path.normpath(script_path +"/"+ "00.Libraries/01.SCG_HMMs/Complete_SCG_DB.hmm"))
-		hmm_path = str(hmm_complete_model)
-	
-	return hmm_path
+	return m10.hmm_path()
 
 #Build DB from genomes
 	
@@ -1532,6 +1516,7 @@ def build_db(genomes, proteins, hmms, db_name, output, threads, verbose, do_comp
 		wcurs = worker.cursor()
 		wcurs.execute("CREATE TABLE genome_index (genome text, gen_id integer, protein_count integer)")
 		wcurs.execute("CREATE TABLE genome_acc_kmer_counts (genome integer, accession integer, count integer)")
+		m10.create_stats_table(wcurs)
 		ok = generate_accessions_index()
 		for t in ok:
 			wcurs.execute("CREATE TABLE " + t + "_genomes (genome INTEGER PRIMARY KEY, kmers array)")
@@ -1540,6 +1525,7 @@ def build_db(genomes, proteins, hmms, db_name, output, threads, verbose, do_comp
 
 		new_gens = []
 		new_gak = []
+		new_stats = []
 		accs_seen = {}
 		if verbose:
 			tracker = progress_tracker(total = len(imported_files.in_files), message = "Processing inputs")
@@ -1581,6 +1567,8 @@ def build_db(genomes, proteins, hmms, db_name, output, threads, verbose, do_comp
 						kmers = kmers.tobytes()
 						wcurs.execute("INSERT INTO {acc}_genomes VALUES (?, ?)".format(acc=acc_name), (genome_idx, kmers,))
 						new_gak.append((genome_idx, acc_id, kmer_ct,))
+						windows, counts, protein = result.protein_stats[acc_name]
+						new_stats.append((genome_idx, acc_id, windows, counts.tobytes(), protein))
 						
 					new_gens.append((genome_name, genome_idx, protein_count,))
 					genome_idx += 1
@@ -1596,6 +1584,7 @@ def build_db(genomes, proteins, hmms, db_name, output, threads, verbose, do_comp
 		
 		wcurs.executemany("INSERT INTO genome_index VALUES (?,?,?)", new_gens)
 		wcurs.executemany("INSERT INTO genome_acc_kmer_counts VALUES (?,?,?)", new_gak)
+		wcurs.executemany("INSERT INTO genome_acc_stats VALUES (?,?,?,?,?)", new_stats)
 		worker.commit()
 		
 		wcurs.close()
@@ -1613,6 +1602,8 @@ def build_db(genomes, proteins, hmms, db_name, output, threads, verbose, do_comp
 		
 		curs.execute("INSERT INTO genome_index SELECT * FROM worker.genome_index")
 		curs.execute("INSERT INTO genome_acc_kmer_counts SELECT * FROM worker.genome_acc_kmer_counts")
+		m10.create_stats_table(curs)
+		curs.execute("INSERT INTO genome_acc_stats SELECT * FROM worker.genome_acc_stats")
 		curs.execute("CREATE INDEX IF NOT EXISTS kmer_acc ON genome_acc_kmer_counts (genome, accession);")
 		parent.commit()
 		
