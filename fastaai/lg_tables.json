@@ -1,0 +1,35 @@
+{
+  "model_SHA256": "51a956d26f3ac1307161cbb72b0239788d60d9c94cf35021d5c09248d22b3c6e",
+  "generator_SHA256": "b07a21cc7962edc5e15893db44b6820cb9bf6485e11094cab50b2d7cf2c2c531",
+  "Bonsai_commit": "534a5f8cea58ccad2d084d124b3e50f298d1ce78",
+  "groups": [
+    "A",
+    "C",
+    "DENQ",
+    "FWY",
+    "G",
+    "H",
+    "ILMV",
+    "KR",
+    "P",
+    "ST"
+  ],
+  "k": 5,
+  "grid_points": 1347404,
+  "maximum_t": 134.7402528642397,
+  "step_t_at_most": 0.0001,
+  "inverse_coordinate": "log(P - stationary_Murphy10_match_fraction)",
+  "validation": {
+    "points": 1000,
+    "t_range": [
+      0,
+      5
+    ],
+    "max_t_error": 2.8860548673126374e-10,
+    "max_identity_fraction_error": 1.2550420702694964e-09
+  },
+  "units": {
+    "t": "LG expected substitutions/site",
+    "identity": "fraction"
+  }
+}
