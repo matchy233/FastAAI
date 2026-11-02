@@ -1,5 +1,7 @@
 """Murphy10 word encoding and model-derived FastAAI statistics."""
 
+import json
+from pathlib import Path
 from typing import Tuple
 
 import numpy as np
@@ -96,3 +98,66 @@ def query_statistics(intersections, accessions, query, query_stats, target_stats
         target_stats[0][accessions, :],
         target_stats[1][accessions, :, :],
     )
+
+
+ROOT = Path(__file__).absolute().parent
+with np.load(ROOT / "lg_tables.npz") as data:
+    T_GRID = data["t"]
+    LOG_EXCESS = data["log_excess"]
+    IDENTITY_GRID = data["identity"]
+    FLOOR = float(data["floor"])
+CONVERSION = json.loads((ROOT / "conversion.json").read_text())
+HEADER = [
+    "query",
+    "target",
+    "shared_SCPs",
+    "P_hat",
+    "t_hat",
+    "marker_identity",
+    "AAI",
+    "AAI_low",
+    "AAI_high",
+    "AAI_saturated",
+]
+
+
+def convert(phat: np.ndarray):
+    phat = np.asarray(phat, dtype=float)
+    distance = np.full(phat.shape, np.nan)
+    finite = np.isfinite(phat) & (phat > FLOOR + 1e-14) & (phat <= 1 + 1e-12)
+    distance[finite] = np.interp(
+        np.log(phat[finite] - FLOOR), LOG_EXCESS[::-1], T_GRID[::-1]
+    )
+    distance[finite & (phat >= 1)] = 0.0
+    identity = np.interp(distance, T_GRID, IDENTITY_GRID)
+    a, b, c = [CONVERSION[k] for k in ["a", "b", "c"]]
+    aai = a + b * identity + c * identity**2
+    bins = CONVERSION["interval_bins"]
+    index = np.searchsorted([row["upper"] for row in bins], aai, side="right")
+    index = np.minimum(index, len(bins) - 1)
+    half = 1.96 * np.array([row["residual_SD"] for row in bins])[index]
+    return {
+        "P_hat": phat,
+        "t_hat": distance,
+        "marker_identity": 100 * identity,
+        "AAI": aai,
+        "AAI_low": aai - half,
+        "AAI_high": aai + half,
+        "AAI_saturated": distance > CONVERSION["AAI_saturation_distance"],
+    }
+
+
+def write_tsv(filename, query, targets, shared, estimates):
+    with open(filename, "w") as output:
+        print(*HEADER, sep="\t", file=output)
+        for i, target in enumerate(targets):
+            values = [query, target, str(int(shared[i]))]
+            for column in HEADER[3:-1]:
+                number = estimates[column][i]
+                values.append(format(number, ".17g") if np.isfinite(number) else "N/A")
+            values.append(
+                str(bool(estimates["AAI_saturated"][i]))
+                if np.isfinite(estimates["t_hat"][i])
+                else "N/A"
+            )
+            print(*values, sep="\t", file=output)
