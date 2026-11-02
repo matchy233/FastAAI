@@ -1842,7 +1842,7 @@ def file_v_db_worker(query_args):
 	
 	in_file.preprocess()
 	
-	qname = in_file.basename
+	qname = in_file.original_name
 	
 	if db_is_in_mem:
 		#The connection is already given as MDB if the db is in mem
@@ -3658,8 +3658,8 @@ def single_query(qf, tf, output, verbose, threads, do_compress):
 	print("")
 	
 	
-	qname = qf.identifiers[0]
-	tname = tf.identifiers[0]
+	qname = qf.in_files[0].original_name
+	tname = tf.in_files[0].original_name
 	
 	name = os.path.normpath(output + "/results/" + qname + "_vs_" + tname + ".aai.txt")
 	print("Output will be located at", name)
