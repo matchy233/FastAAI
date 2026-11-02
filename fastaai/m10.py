@@ -141,10 +141,36 @@ def convert(phat: np.ndarray):
         "t_hat": distance,
         "marker_identity": 100 * identity,
         "AAI": aai,
-        "AAI_low": aai - half,
-        "AAI_high": aai + half,
+        # AAI is a percentage: the interval cannot leave [0, 100].
+        "AAI_low": np.clip(aai - half, 0.0, 100.0),
+        "AAI_high": np.clip(aai + half, 0.0, 100.0),
         "AAI_saturated": distance > CONVERSION["AAI_saturation_distance"],
     }
+
+
+def mark_self(estimates, query, targets):
+    """Report a genome against itself exactly.
+
+    Repeated 5-mers inside a protein are counted once in the word set but
+    several times in the window count, so even identical proteins give
+    P_hat below 1 and AAI below 100. Native FastAAI special-cases identical
+    genomes; this does the same for every pair whose identifiers match and
+    leaves all other pairs untouched.
+    """
+    mask = np.array([target == query for target in targets], dtype=bool)
+    if not mask.any():
+        return estimates
+    for key, value in [
+        ("P_hat", 1.0),
+        ("t_hat", 0.0),
+        ("marker_identity", 100.0),
+        ("AAI", 100.0),
+        ("AAI_low", 100.0),
+        ("AAI_high", 100.0),
+        ("AAI_saturated", False),
+    ]:
+        estimates[key] = np.where(mask, value, estimates[key])
+    return estimates
 
 
 def write_tsv(filename, query, targets, shared, estimates):

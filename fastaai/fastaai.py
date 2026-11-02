@@ -1744,7 +1744,7 @@ def file_v_db_worker(query_args):
 		connection.close()
 	qstats = m10.file_stats(in_file.protein_stats, acc_index)
 	statistics = m10.query_statistics(np.asarray(rows).reshape(len(rows), num_tgts), np.array(accessions, dtype=np.int32), 0, qstats, _tstats)
-	estimates = m10.convert(statistics['P_hat'])
+	estimates = m10.mark_self(m10.convert(statistics['P_hat']), qname, _tname)
 	if out_style == "tsv":
 		m10.write_tsv(os.path.join(out_base, qname + "_results.txt"), qname, _tname, statistics['shared_SCPs'], estimates)
 	return [qname, estimates, stored]
@@ -2486,7 +2486,7 @@ def one_work(placeholder):
 		results = np.vstack(results)
 		
 		statistics = m10.query_statistics(results, _qgak[q][0], q, _qstats, _tstats)
-		estimates = m10.convert(statistics['P_hat'])
+		estimates = m10.mark_self(m10.convert(statistics['P_hat']), _qnames[q], _tnames)
 		if style == "tsv":
 			qname = _qnames[q]
 			name = os.path.join(out_base, "results", qname + "_results.txt")
@@ -2625,7 +2625,7 @@ def on_disk_work_one(placeholder):
 		results = np.vstack(results)
 		
 		statistics = m10.query_statistics(results, _qgak[q][0], q, _qstats, _tstats)
-		estimates = m10.convert(statistics['P_hat'])
+		estimates = m10.mark_self(m10.convert(statistics['P_hat']), qname, _tnames)
 		if style == "tsv":
 			name = os.path.join(out_base, "results", qname + "_results.txt")
 			m10.write_tsv(name, qname, _tnames, statistics['shared_SCPs'], estimates)
@@ -3451,7 +3451,7 @@ def single_query(qf, tf, output, verbose, threads, do_compress):
 	qstats = m10.file_stats(query.protein_stats, index)
 	tstats = m10.file_stats(target.protein_stats, index)
 	statistics = m10.query_statistics(intersections, accessions, 0, qstats, tstats)
-	estimates = m10.convert(statistics['P_hat'])
+	estimates = m10.mark_self(m10.convert(statistics['P_hat']), qname, [tname])
 	m10.write_tsv(name, qname, [tname], statistics['shared_SCPs'], estimates)
 	print("FastAAI-M10 single query done! Estimated AAI:", estimates['AAI'][0])
 
