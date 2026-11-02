@@ -2107,8 +2107,10 @@ class file_vs_db_query:
 		if self.style == "matrix":
 			output_name = os.path.normpath(self.output + "/FastAAI_matrix.txt")
 			output = open(output_name, "w")
+			distance_output = open(os.path.normpath(self.output + "/FastAAI_t_hat_matrix.txt"), "w")
 			#needs target names.
 			print("query_genome", *tgt_ids, sep = "\t", file = output)
+			print("query_genome", *tgt_ids, sep = "\t", file = distance_output)
 		
 		#Need to pass these
 		
@@ -2135,6 +2137,7 @@ class file_vs_db_query:
 			if self.style == "matrix":
 				printout = result[1]["AAI"]
 				print(qname, *printout, sep = "\t", file = output)
+				print(qname, *result[1]["t_hat"], sep = "\t", file = distance_output)
 				
 			if self.do_db_build:
 				query_genome_index.append((qname, qgi_ct, len(result[2]),))
@@ -2150,6 +2153,7 @@ class file_vs_db_query:
 		
 		if self.style == "matrix":
 			output.close()
+			distance_output.close()
 			
 		if self.do_db_build:
 			q_curs.execute("CREATE TABLE genome_index (genome text, gen_id integer, protein_count integer)")
@@ -2229,90 +2233,12 @@ class file_vs_db_query:
 		#Clean up the db connections; free the mem.
 		self.clean_up()
 	
-def numpy_kaai_to_aai(kaai_array):
-	#aai_hat = (-0.3087057 + 1.810741 * (np.exp(-(-0.2607023 * np.log(kaai))**(1/3.435))))*100
+def numpy_kaai_to_aai(values):
+	return m10.convert(values)['AAI'].astype(str)
 	
-	#Protect the original jaccard averages memory item
-	aai_hat_array = kaai_array.copy()
-	
-	non_zero = np.where(aai_hat_array > 0)
-	is_zero  = np.where(aai_hat_array <= 0)
-	
-	#I broke this down into its original components
-	#Avoid zeroes in log - still actually works, but it produces warnings I don't want to see.
-	aai_hat_array[non_zero] = np.log(aai_hat_array[non_zero])
-	
-	aai_hat_array = np.multiply(np.subtract(np.multiply(np.exp(np.negative(np.power(np.multiply(aai_hat_array, -0.2607023), (1/3.435)))), 1.810741), 0.3087057), 100)
-	'''
-	Same as the above, broken down into easier-to-follow steps.
-	aai_hat_array = np.multiply(aai_hat_array, -0.2607023)
-	aai_hat_array = np.power(aai_hat_array, (1/3.435))
-	aai_hat_array = np.negative(aai_hat_array)
-	aai_hat_array = np.exp(aai_hat_array)
-	aai_hat_array = np.multiply(aai_hat_array, 1.810741)
-	aai_hat_array = np.subtract(aai_hat_array, 0.3087057)
-	aai_hat_array = np.multiply(aai_hat_array, 100)
-	'''
-	
-	#<30 and >90 values
-	smol = np.where(aai_hat_array < 30)
-	big  = np.where(aai_hat_array > 90)
-	
-	aai_hat_array = np.round(aai_hat_array, 2)
-	
-	#Convert to final printables
-	aai_hat_array = aai_hat_array.astype(str)
-	aai_hat_array[smol] = "<30%"
-	aai_hat_array[big]  = ">90%"
-	#The math of the above ends up with zero values being big, so we fix those.
-	aai_hat_array[is_zero] = "<30%"
-	
-	return aai_hat_array
-	
-#Also includes a multiply by 100 and type conversion compared to original - this is some silliness for saving memory.
-def numpy_kaai_to_aai_just_nums(kaai_array, as_float = False):
-	#aai_hat = (-0.3087057 + 1.810741 * (np.exp(-(-0.2607023 * np.log(kaai))**(1/3.435))))*100
-	
-	#Protect the original jaccard averages memory item
-	aai_hat_array = kaai_array.copy()
-	
-	non_zero = np.where(aai_hat_array > 0)
-	is_zero  = np.where(aai_hat_array <= 0)
-	
-	#I broke this down into its original components
-	#Avoid zeroes in log - still actually works, but it produces warnings I don't want to see.
-	aai_hat_array[non_zero] = np.log(aai_hat_array[non_zero])
-	
-	aai_hat_array = np.multiply(np.subtract(np.multiply(np.exp(np.negative(np.power(np.multiply(aai_hat_array, -0.2607023), (1/3.435)))), 1.810741), 0.3087057), 100)
-	'''
-	Same as the above, broken down into easier-to-follow steps.
-	aai_hat_array = np.multiply(aai_hat_array, -0.2607023)
-	aai_hat_array = np.power(aai_hat_array, (1/3.435))
-	aai_hat_array = np.negative(aai_hat_array)
-	aai_hat_array = np.exp(aai_hat_array)
-	aai_hat_array = np.multiply(aai_hat_array, 1.810741)
-	aai_hat_array = np.subtract(aai_hat_array, 0.3087057)
-	aai_hat_array = np.multiply(aai_hat_array, 100)
-	'''
-	
-	aai_hat_array = np.round(aai_hat_array, 2)
-	
-	#<30 and >90 values
-	smol = np.where(aai_hat_array < 30)
-	big  = np.where(aai_hat_array > 90)
-	
-	#We can find these later.
-	aai_hat_array[smol] = 15
-	aai_hat_array[big]  = 95
-	
-	if as_float:
-		aai_hat_array = np.round(aai_hat_array, 2)
-	else:
-		aai_hat_array = np.multiply(aai_hat_array, 100)
-		aai_hat_array = np.round(aai_hat_array, 2)
-		aai_hat_array = aai_hat_array.astype(np.int16)
-	
-	return aai_hat_array
+#Kept for callers of the native name; returns M10 AAI percentages.
+def numpy_kaai_to_aai_just_nums(values, as_float = False):
+	return m10.convert(values)['AAI']
 
 	
 def curtime():
@@ -2720,9 +2646,12 @@ def one_work(task):
 	task_id, local_qgak, query_grouping = task
 	group_id = os.path.normpath(temp_path + "/partial_results_group_" + str(task_id)+ ".txt")
 	holder = []
+	distance_holder = []
 	outwriter = None
+	distance_outwriter = None
 	if style == "matrix" and not store:
 		outwriter = open(group_id, "w")
+		distance_outwriter = open(group_id + ".t", "w")
 
 	try:
 		for q in query_grouping:
@@ -2748,8 +2677,10 @@ def one_work(task):
 			else:
 				if store:
 					holder.append(estimates['AAI'])
+					distance_holder.append(estimates['t_hat'])
 				else:
 					print(*estimates['AAI'], sep = "\t", file = outwriter)
+					print(*estimates['t_hat'], sep = "\t", file = distance_outwriter)
 
 		result_file = None
 		if style == "matrix":
@@ -2758,6 +2689,7 @@ def one_work(task):
 					return (len(query_grouping), None)
 				hold_together = np.vstack(holder)
 				np.savetxt(group_id, hold_together, delimiter = "\t", fmt = "%.17g")
+				np.savetxt(group_id + ".t", np.vstack(distance_holder), delimiter = "\t", fmt = "%.17g")
 				result_file = group_id
 			elif len(query_grouping) > 0:
 				result_file = group_id
@@ -2765,6 +2697,8 @@ def one_work(task):
 	finally:
 		if outwriter is not None:
 			outwriter.close()
+		if distance_outwriter is not None:
+			distance_outwriter.close()
 
 def two_work(i):
 	if store:
@@ -2831,6 +2765,7 @@ def on_disk_work_one(task):
 	group_id = os.path.normpath(temp_path + "/partial_results_group_" + str(task_id)+ ".txt")
 	curs = database.cursor()
 	output_rows = []
+	distance_rows = []
 	for q in query_grouping:
 		results = []
 		qname = _qnames[q]
@@ -2875,6 +2810,7 @@ def on_disk_work_one(task):
 			m10.write_tsv(output_name, qname, _tnames, statistics['shared_SCPs'], estimates)
 		else:
 			output_rows.append("\t".join(str(value) for value in estimates['AAI']))
+			distance_rows.append("\t".join(str(value) for value in estimates['t_hat']))
 
 	curs.close()
 	if style == "matrix":
@@ -2883,6 +2819,9 @@ def on_disk_work_one(task):
 		with open(group_id, "w") as outwriter:
 			if len(output_rows) > 0:
 				outwriter.write("\n".join(output_rows) + "\n")
+		with open(group_id + ".t", "w") as outwriter:
+			if len(distance_rows) > 0:
+				outwriter.write("\n".join(distance_rows) + "\n")
 		return (len(query_grouping), group_id)
 	return (len(query_grouping), None)
 	
@@ -3186,6 +3125,9 @@ class db_db_remake:
 
 		self.validate_result_files(result_files)
 		result_files = sorted_nicely(result_files)
+		#Each AAI partial file has a distance partial file with the same rows.
+		distance_files = [f + ".t" for f in result_files]
+		self.validate_result_files(distance_files)
 		
 		#print("Combining:")
 		#for f in result_files:
@@ -3196,34 +3138,35 @@ class db_db_remake:
 		else:
 			print("\nFinalizing results.")
 		
-		output_file = os.path.normpath(self.output+"/FastAAI_matrix.txt")
-		final_outwriter = open(output_file, "w")
-		print("query_genome\t"+'\t'.join(self.target_names), file = final_outwriter)
-		
-		row = 0
+		for partial_files, matrix_name in [(result_files, "FastAAI_matrix.txt"), (distance_files, "FastAAI_t_hat_matrix.txt")]:
+			output_file = os.path.normpath(self.output+"/"+matrix_name)
+			final_outwriter = open(output_file, "w")
+			print("query_genome\t"+'\t'.join(self.target_names), file = final_outwriter)
 			
-		for f in result_files:
-			fh = open(f, "r")
-			cur = fh.readlines()
-			fh.close()
+			row = 0
+				
+			for f in partial_files:
+				fh = open(f, "r")
+				cur = fh.readlines()
+				fh.close()
+				
+				for i in range(0, len(cur)):
+					#Add in the query name to the row
+					cur[i] = self.query_names[row]+"\t"+cur[i]
+					row += 1
+				
+				final_outwriter.write(''.join(cur))
+				cur = None	
+				
+				try:
+					os.remove(f)
+				except:
+					pass
+				
+				if self.verbose and partial_files is result_files:
+					tracker.update()
 			
-			for i in range(0, len(cur)):
-				#Add in the query name to the row
-				cur[i] = self.query_names[row]+"\t"+cur[i]
-				row += 1
-			
-			final_outwriter.write(''.join(cur))
-			cur = None	
-			
-			try:
-				os.remove(f)
-			except:
-				pass
-			
-			if self.verbose:
-				tracker.update()
-		
-		final_outwriter.close()
+			final_outwriter.close()
 		
 		try:
 			if len(os.listdir(tempdir_path)) == 0:
@@ -3687,11 +3630,8 @@ def single_query_opts():
 	
 	return parser, args
 
-def kaai_to_aai(kaai):
-	# Transform the kAAI into estimated AAI values
-	aai_hat = (-0.3087057 + 1.810741 * (np.exp(-(-0.2607023 * np.log(kaai))**(1/3.435))))*100
-	
-	return aai_hat
+def kaai_to_aai(value):
+	return m10.convert(np.array([value]))['AAI'][0]
 	
 #This one's unique. It doesn't do anything with the DB, which means it doesn't access any other functionality outside of the input_file class. It just advances a pair of inputs in parallel and does intersections.
 def single_query(qf, tf, output, verbose, threads, do_compress):	
@@ -4379,7 +4319,7 @@ def main():
 	selection = sys.argv[1]
 	
 	if selection == "version":
-		sys.exit("FastAAI version=0.1.17")
+		sys.exit("FastAAI-M10 based on upstream FastAAI master 3b4904a")
 	
 	if selection not in modules:
 		print("")
