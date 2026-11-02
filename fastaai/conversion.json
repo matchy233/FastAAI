@@ -1,0 +1,111 @@
+{
+  "a": 109.08488736374073,
+  "b": -239.64381412594238,
+  "c": 229.13963396178792,
+  "identity_input_unit": "fraction",
+  "AAI_output_unit": "percentage points",
+  "interval_bins": [
+    {
+      "lower": 40,
+      "upper": 50,
+      "count": 24,
+      "residual_SD": 1.190268135094828,
+      "residual_mean": -0.8731052021277126
+    },
+    {
+      "lower": 50,
+      "upper": 55,
+      "count": 61,
+      "residual_SD": 2.5744013428027936,
+      "residual_mean": 0.2617276659171489
+    },
+    {
+      "lower": 55,
+      "upper": 60,
+      "count": 85,
+      "residual_SD": 2.6054676403561716,
+      "residual_mean": 0.008233552725936273
+    },
+    {
+      "lower": 60,
+      "upper": 65,
+      "count": 86,
+      "residual_SD": 1.559245903419733,
+      "residual_mean": -0.3085115806378509
+    },
+    {
+      "lower": 65,
+      "upper": 70,
+      "count": 83,
+      "residual_SD": 2.5220578081158824,
+      "residual_mean": 0.4326870513111683
+    },
+    {
+      "lower": 70,
+      "upper": 75,
+      "count": 42,
+      "residual_SD": 2.6168978286313043,
+      "residual_mean": 1.1688433183141644
+    },
+    {
+      "lower": 75,
+      "upper": 80,
+      "count": 39,
+      "residual_SD": 3.248747414964901,
+      "residual_mean": 1.4625704707554537
+    },
+    {
+      "lower": 80,
+      "upper": 85,
+      "count": 34,
+      "residual_SD": 3.5325948137886845,
+      "residual_mean": -0.6280673482535185
+    },
+    {
+      "lower": 85,
+      "upper": 100,
+      "count": 26,
+      "residual_SD": 2.3938214295760827,
+      "residual_mean": -2.0228314428774143
+    }
+  ],
+  "interval": "AAI +/- 1.96 * residual SD in predicted-AAI bin",
+  "AAI_saturation_distance": 0.8,
+  "ship": true,
+  "provenance": {
+    "training_panel": "B;480 pairs;32 taxonomic families;U set;Murphy10-k5",
+    "statistics_SHA256": "a6aa16358b9574034e93f3d33ce1ea19c2da976553f796c9f7038620cedc1c04",
+    "AAI_reference_SHA256": "04c222b7cfab78e9a5fc7a6bc3dbb35aa8d5229f7be4df0dd6cd68f9179b4763",
+    "module_SHA256": "ec7e9de587c3b13703323c3d09f69d58ce8bc4525b0cf75b5e8442479a848345",
+    "LG_SHA256": "51a956d26f3ac1307161cbb72b0239788d60d9c94cf35021d5c09248d22b3c6e",
+    "binning": "5-point bins 40..100; first bin with <15 rows merges with nearest-center neighbour, ties left; tails use endpoint bins without censoring AAI",
+    "interval_source": "leave-one-taxonomic-family-out residuals",
+    "interval_limit": "Approximate empirical intervals; not guaranteed or calibrated at deep ranks",
+    "Panel_A_bacterial_genus": {
+      "group": "Panel A bacteria",
+      "rank": "genus",
+      "pairs": 84,
+      "bias": 0.300806011327569,
+      "RMSE": 2.4188577118104986,
+      "interval_coverage": 0.9523809523809523
+    },
+    "Panel_B_LOFO": [
+      {
+        "group": "Panel B LOFO",
+        "rank": "genus",
+        "pairs": 192,
+        "bias": -0.34949517950120984,
+        "RMSE": 3.017505051384362,
+        "interval_coverage": 0.890625
+      },
+      {
+        "group": "Panel B LOFO",
+        "rank": "family",
+        "pairs": 288,
+        "bias": 0.362425621225746,
+        "RMSE": 2.300518644443654,
+        "interval_coverage": 0.9340277777777778
+      }
+    ]
+  }
+}
