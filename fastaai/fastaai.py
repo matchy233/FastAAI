@@ -1758,7 +1758,7 @@ def build_db(genomes, proteins, hmms, db_name, output, threads, verbose, do_comp
 			acc_curs.close()
 			accdb.close()
 			
-			update_concat_sql = "INSERT INTO {acc} VALUES (?,?) ON CONFLICT(kmer) DO UPDATE SET genomes=genomes || (?)".format(acc=accession)
+			update_concat_sql = "INSERT INTO {acc} VALUES (?,?) ON CONFLICT(kmer) DO UPDATE SET genomes=CAST(genomes || (?) AS BLOB)".format(acc=accession)
 			#ON CONFLICT(kmer) DO UPDATE SET genomes=genomes || acc.{acc}.genomes;".format(acc=accession)
 			#print(update_concat_sql)
 			curs.executemany(update_concat_sql, to_update)
@@ -3551,7 +3551,7 @@ def merge_db(recipient, donors, donor_file, verbose, threads):
 			#Get the genomes from worker db.
 			curs.execute("INSERT INTO {acc}_genomes SELECT * FROM acc.{acc}_genomes".format(acc=accession))
 			to_update = curs.execute("SELECT kmer, genomes, genomes FROM acc.{acc}".format(acc=accession)).fetchall()
-			update_concat_sql = "INSERT INTO {acc} VALUES (?,?) ON CONFLICT(kmer) DO UPDATE SET genomes=genomes || (?)".format(acc=accession)
+			update_concat_sql = "INSERT INTO {acc} VALUES (?,?) ON CONFLICT(kmer) DO UPDATE SET genomes=CAST(genomes || (?) AS BLOB)".format(acc=accession)
 			curs.executemany(update_concat_sql, to_update)
 			conn.commit()
 			
@@ -3775,7 +3775,7 @@ def miga_merge(infile, target_db, verbose, do_compress):
 				#we know there's only one genome in these cases.
 				kmers_first.append((int(k), gen_id, gen_id, ))
 			
-			update_concat_sql = "INSERT INTO {acc} VALUES (?,?) ON CONFLICT(kmer) DO UPDATE SET genomes=genomes || (?)".format(acc=accession)
+			update_concat_sql = "INSERT INTO {acc} VALUES (?,?) ON CONFLICT(kmer) DO UPDATE SET genomes=CAST(genomes || (?) AS BLOB)".format(acc=accession)
 			
 			curs.executemany(update_concat_sql, kmers_first)
 			
@@ -4187,7 +4187,7 @@ def miga_db_from_crystals(crystals, output, db_name, threads, verbose):
 				curag = None
 		
 				curaac = new_curs.execute("SELECT kmer, genomes, genomes FROM {acc}".format(acc=acc)).fetchall()
-				update_concat_sql = "INSERT INTO {acc} VALUES (?,?) ON CONFLICT(kmer) DO UPDATE SET genomes=genomes || (?)".format(acc=acc)
+				update_concat_sql = "INSERT INTO {acc} VALUES (?,?) ON CONFLICT(kmer) DO UPDATE SET genomes=CAST(genomes || (?) AS BLOB)".format(acc=acc)
 				final_curs.executemany(update_concat_sql, curaac)
 				curacc = None
 					
