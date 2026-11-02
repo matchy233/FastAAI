@@ -38,3 +38,61 @@ def create_stats_table(cursor) -> None:
         "(genome INTEGER, accession INTEGER, windows INTEGER, "
         "group_counts BLOB, protein TEXT, PRIMARY KEY (genome, accession))"
     )
+
+
+def frequencies(counts: np.ndarray) -> np.ndarray:
+    totals = counts.sum(axis=-1, keepdims=True)
+    return np.divide(
+        counts, totals, out=np.zeros_like(counts, dtype=float), where=totals > 0
+    )
+
+
+def load_stats(connection, genomes: int, schema: str = "main"):
+    windows = np.zeros((122, genomes), dtype=float)
+    counts = np.zeros((122, genomes, 10), dtype=float)
+    for genome, accession, size, composition in connection.execute(
+        f"SELECT genome,accession,windows,group_counts FROM {schema}.genome_acc_stats"
+    ):
+        windows[accession, genome] = size
+        counts[accession, genome] = np.frombuffer(composition, dtype=np.int32)
+    return windows, frequencies(counts)
+
+
+def file_stats(protein_stats, accession_index):
+    windows = np.zeros((122, 1), dtype=float)
+    counts = np.zeros((122, 1, 10), dtype=float)
+    for accession, (size, composition, _protein) in protein_stats.items():
+        index = accession_index[accession]
+        windows[index, 0] = size
+        counts[index, 0] = composition
+    return windows, frequencies(counts)
+
+
+def pool_statistics(intersections, q_windows, q_frequencies, t_windows, t_frequencies):
+    minimum = np.minimum(q_windows[:, None], t_windows)
+    shared = minimum > 0
+    r = np.einsum("ag,atg->at", q_frequencies, t_frequencies)
+    chance = (q_windows[:, None] * t_windows - minimum) * r**5
+    s = np.sum(np.where(shared, intersections, 0), axis=0)
+    lam = np.sum(np.where(shared, chance, 0), axis=0)
+    m = np.sum(minimum, axis=0)
+    ratio = np.divide(
+        s - lam, m, out=np.full(len(m), np.nan), where=(m > 0) & (s > lam)
+    )
+    return {
+        "P_hat": ratio**0.2,
+        "shared_SCPs": shared.sum(axis=0),
+        "S": s,
+        "lambda": lam,
+        "m": m,
+    }
+
+
+def query_statistics(intersections, accessions, query, query_stats, target_stats):
+    return pool_statistics(
+        intersections,
+        query_stats[0][accessions, query],
+        query_stats[1][accessions, query, :],
+        target_stats[0][accessions, :],
+        target_stats[1][accessions, :, :],
+    )
