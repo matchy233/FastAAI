@@ -36,6 +36,8 @@ from math import ceil
 
 import re
 
+from . import m10
+
 #Not an input sanitizer - simply replaces characters that would throw SQLite for a loop.
 def sql_safe(string):
 	#Sanitize for SQL
@@ -1053,27 +1055,7 @@ class input_file:
 	
 	#Translate tetramers to unique int32 indices.
 	def unique_kmer_simple_key(self, seq):
-		#num tetramers = len(seq) - 4 + 1, just make it -3.
-		n_kmers = len(seq) - 3
-		
-		#Converts the characters in a sequence into their ascii int value
-		as_ints = np.array([ord(i) for i in seq], dtype = np.int32)
-		
-		#create seq like 0,1,2,3; 1,2,3,4; 2,3,4,5... for each tetramer that needs a value
-		kmers = np.arange(4*n_kmers)
-		kmers = kmers % 4 + kmers // 4
-		
-		#Select the characters (as ints) corresponding to each tetramer all at once and reshape into rows of 4, 
-		#each row corresp. to a successive tetramer
-		kmers = as_ints[kmers].reshape((n_kmers, 4))
-		
-		#Given four 2-digit numbers, these multipliers work as offsets so that all digits are preserved in order when summed
-		mult = np.array([1000000, 10000, 100, 1], dtype = np.int32)
-		
-		#the fixed values effectively offset the successive chars of the tetramer by 2 positions each time; 
-		#practically, this is concatenation of numbers
-		#Matrix mult does this for all values at once.
-		return np.unique(np.dot(kmers, mult))
+		return m10.encode(seq)[0]
 
 	def load_hmm_and_filter_from_file(self):
 		prots = []
@@ -1312,13 +1294,8 @@ def find_hmm():
 
 #Build DB from genomes
 	
-def unique_kmers(seq, ksize):
-	n_kmers = len(seq) - ksize + 1
-	kmers = []
-	for i in range(n_kmers):
-		kmers.append(kmer_index[seq[i:i + ksize]])
-	#We care about the type because we're working with bytes later.
-	return np.unique(kmers).astype(np.int32)
+def unique_kmers(seq, ksize=5):
+	return m10.encode(seq)[0]
 
 def split_seq(seq, num_grps):
 	newseq = []

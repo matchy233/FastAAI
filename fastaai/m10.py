@@ -1,0 +1,22 @@
+"""Murphy10 word encoding and model-derived FastAAI statistics."""
+
+from typing import Tuple
+
+import numpy as np
+
+GROUPS = ("A", "C", "DENQ", "FWY", "G", "H", "ILMV", "KR", "P", "ST")
+LOOKUP = np.full(256, -1, dtype=np.int16)
+for group, letters in enumerate(GROUPS):
+    LOOKUP[np.frombuffer(letters.encode("ascii"), dtype=np.uint8)] = group
+POWERS = np.array([10000, 1000, 100, 10, 1], dtype=np.int32)
+
+
+def encode(sequence: str) -> Tuple[np.ndarray, int, np.ndarray]:
+    digits = LOOKUP[np.frombuffer(sequence.encode("ascii"), dtype=np.uint8)]
+    counts = np.bincount(digits[digits >= 0], minlength=10).astype(np.int32)
+    if len(digits) < 5:
+        return np.empty(0, dtype=np.int32), 0, counts
+    windows = np.lib.stride_tricks.sliding_window_view(digits, 5)
+    windows = windows[np.all(windows >= 0, axis=1)]
+    words = np.unique(windows @ POWERS).astype(np.int32)
+    return words, len(windows), counts
