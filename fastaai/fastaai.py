@@ -36,6 +36,45 @@ from math import ceil
 
 import re
 
+#Not an input sanitizer - simply replaces characters that would throw SQLite for a loop.
+def sql_safe(string):
+	#Sanitize for SQL
+	#These are chars safe for sql
+	sql_safe = set('_abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789')
+	current_chars = set(string)
+	#self.sql_name = self.basename
+	#Identify SQL-unsafe characters as those outside the permissible set and replace all with underscores.
+	for char in current_chars - sql_safe:
+		string = string.replace(char, "_")
+		
+	return string
+	
+#Gonna have to go put this everywhere...
+#Consistent file basename behavior
+def file_basename(file):
+	#Get the name after the final directory path
+	name = os.path.basename(file)
+	#Extract the portion of a filename prior to the first '.' separator.
+	while name != os.path.splitext(name)[0]:
+		name = os.path.splitext(name)[0]
+	
+	name = sql_safe(name)
+	
+	return name
+	
+def seqID_basename(seqid):
+	#Get the name after the final directory path
+	if seqid.startswith(">"):
+		seqid = seqid[1:]
+	
+	#Remove everything other than the seqid
+	name = seqid.split()[0]
+	
+	#Get SQL-friendly version of the name.
+	name = sql_safe(name)
+	
+	return name
+	
 
 class progress_tracker:
 	def __init__(self, total, step_size = 2, message = None, one_line = True):
@@ -110,81 +149,35 @@ def convert_float_array_32(bytestring):
 def convert_float_array_64(bytestring):
 	return np.frombuffer(bytestring, dtype = np.float64)
 
-
-def normalise_pyhmmer_text(value):
-	"""Return PyHMMER text fields as Python strings."""
-	if value is None:
-		return None
-	if isinstance(value, bytes):
-		return value.decode("utf-8")
-	return str(value)
-
-
-def decode_text_buffer(value, file_path):
-	"""Decode FASTAAI text inputs with a small compatibility fallback."""
-	for encoding in ("utf-8", "latin-1"):
-		try:
-			return value.decode(encoding)
-		except UnicodeDecodeError:
-			continue
-	raise ValueError("Unable to decode text input: " + str(file_path))
-
 def read_fasta(file):
 	cur_seq = ""
 	cur_prot = ""
-	defline = ""
 	
 	contents = {}
 	deflines = {}
 	
 	fasta = agnostic_reader(file)
-	for line_number, line in enumerate(fasta, start = 1):
-		line = line.strip()
-		if len(line) == 0:
-			continue
-
+	for line in fasta:
 		if line.startswith(">"):
-			if len(cur_prot) > 0:
+			if len(cur_seq) > 0:
 				contents[cur_prot] = cur_seq
 				deflines[cur_prot] = defline
 				
 			cur_seq = ""
-			cur_prot = line.split()[0][1:]
-			if len(cur_prot) == 0:
-				fasta.close()
-				raise ValueError("Malformed FASTA in " + str(file) + ": empty header at line " + str(line_number))
-			defline = line[len(cur_prot)+1 :].strip()
+			cur_prot = line.strip().split()[0][1:]
+			defline = line.strip()[len(cur_prot)+1 :].strip()
 			
 		else:
-			if len(cur_prot) == 0:
-				fasta.close()
-				raise ValueError("Malformed FASTA in " + str(file) + ": sequence data found before the first header at line " + str(line_number))
-			cur_seq += line
+			cur_seq += line.strip()
 				
 	fasta.close()
 	
 	#Final iter
-	if len(cur_prot) > 0:
+	if len(cur_seq) > 0:
 		contents[cur_prot] = cur_seq
 		deflines[cur_prot] = defline
 		
 	return contents, deflines
-
-
-def safe_sql_identifier(value):
-	"""Return a SQLite-safe identifier fragment."""
-	safe_value = re.sub(r"[^0-9A-Za-z_]+", "_", str(value))
-	safe_value = re.sub(r"_+", "_", safe_value).strip("_")
-	if len(safe_value) == 0:
-		safe_value = "value"
-	if safe_value[0].isdigit():
-		safe_value = "n_" + safe_value
-	return safe_value
-
-
-def build_temp_table_name(query_name, accession_name):
-	"""Build a temporary table name that is safe for SQLite."""
-	return "tmp_" + safe_sql_identifier(query_name) + "_" + safe_sql_identifier(accession_name)
 	
 class fasta_file:
 	def __init__(self, file, type = "genome"):
@@ -195,19 +188,16 @@ class fasta_file:
 		
 		self.tuple_structure = namedtuple("fasta", ["seqid", "description", "sequence"])
 		self.contents = {}
-		self.sequences = None
 		
 	def convert(self, contents, descriptions):
 		for protein in contents:
 			self.contents = self.tuple_structure(seqid = protein, description = descriptions[protein], sequence = contents[protein])
 			
 	
-	def import_fasta(self):
+	def def_import_file(self):
 		contents, descriptions = read_fasta(self.file_path)
-		self.sequences = contents
 		self.convert(contents, descriptions)
-
-#Old but contains some useful code		
+		
 class pyhmmer_manager:
 	def __init__(self, do_compress):
 		self.hmm_model = []
@@ -344,13 +334,15 @@ class pyhmmer_manager:
 		
 		for model in top_hits:
 			for hit in model:
-				target_name = normalise_pyhmmer_text(hit.name)
-				target_acc = normalise_pyhmmer_text(hit.accession)
+				target_name = hit.name.decode()
+				target_acc = hit.accession
 				if target_acc is None:
 					target_acc = "-"
+				else:
+					target_acc = target_acc.decode()
 				
-				query_name = normalise_pyhmmer_text(hit.best_domain.alignment.hmm_name)
-				query_acc = normalise_pyhmmer_text(hit.best_domain.alignment.hmm_accession)
+				query_name = hit.best_domain.alignment.hmm_name.decode()
+				query_acc = hit.best_domain.alignment.hmm_accession.decode()
 				
 				full_seq_evalue = "%.2g" % hit.evalue
 				full_seq_score = round(hit.score, 1)
@@ -437,36 +429,35 @@ class pyhmmer_manager:
 					self.best_hits.pop(key)
 				
 	def to_hmm_file(self, output):
-		if output is not None:
-			#PyHMMER data is a bit hard to parse. For each result:
-			
-			content = '\n'.join(self.printable_lines) + '\n'
-			
-			if self.do_compress:
-				#Clean
-				if os.path.exists(output):
-					os.remove(output)
-					
-				content = content.encode()
-							
-				fh = gzip.open(output+".gz", "wb")
-				fh.write(content)
-				fh.close()
-				content = None
+		#PyHMMER data is a bit hard to parse. For each result:
+		
+		content = '\n'.join(self.printable_lines) + '\n'
+		
+		if self.do_compress:
+			#Clean
+			if os.path.exists(output):
+				os.remove(output)
 				
-			else:
-				#Clean
-				if os.path.exists(output+".gz"):
-					os.remove(output+".gz")
-					
-				fh = open(output, "w")
-				
-				fh.write(content)
-					
-				fh.close()
-				
+			content = content.encode()
+						
+			fh = gzip.open(output+".gz", "wb")
+			fh.write(content)
+			fh.close()
 			content = None
 			
+		else:
+			#Clean
+			if os.path.exists(output+".gz"):
+				os.remove(output+".gz")
+				
+			fh = open(output, "w")
+			
+			fh.write(content)
+				
+			fh.close()
+			
+		content = None
+		
 	#If we're doing this step at all, we've either loaded the seqs into mem by reading the prot file
 	#or have them in mem thanks to pyrodigal.
 	def run_for_fastaai(self, prots, hmm_output):
@@ -476,256 +467,126 @@ class pyhmmer_manager:
 			self.filter_to_best_hits()
 			try:
 				self.to_hmm_file(hmm_output)
-			except Exception as exc:
-				output_name = hmm_output if hmm_output is not None else "HMM output"
-				raise RuntimeError(f"{output_name} cannot be created. HMM search failed.") from exc
+			except:
+				print(output, "cannot be created. HMM search failed. This file will be skipped.")
 
-		except Exception as exc:
+		except:
+			print(output, "failed to run through HMMER!")
 			self.best_hits = None
-			output_name = hmm_output if hmm_output is not None else "HMM output"
-			raise RuntimeError(f"{output_name} failed to run through HMMER.") from exc
 
-class new_pyhmmer_manager:
-	def __init__(self, compress = True):
-		self.proteins = None
-		self.hmm_models = None
 		
-		self.nt_easel = pyhmmer.easel.Alphabet.dna()
-		self.amino_easel = pyhmmer.easel.Alphabet.amino()
-		
-		self.proteins_to_search = None
-		
-		self.hmm_result_proteins = []
-		self.hmm_result_accessions = []
-		self.hmm_result_scores = []
-		
-		self.printable_lines = []
-		
-		self.best_hits = None
-		
-		self.do_compress = compress
-		
-	def load_hmm_from_file(self, hmm_file):
-		ar = agnostic_reader(hmm_file)
-		try:
-			hmm_text = ar.read()
-		finally:
-			ar.close()
-		hmm_io = io.BytesIO(hmm_text.encode(encoding = "ascii"))
-		self.convert_hmm_to_digital(hmm_io)
-			
-			
-	def convert_hmm_to_digital(self, hmm_io):
-		with pyhmmer.plan7.HMMFile(hmm_io) as fh:
-			hmms = list(fh)
-			
-		self.hmm_models = hmms
-		
-	def load_protein_seqs_from_file(self, protein_file):
-		ff = fasta_file(protein_file)
-		ff.import_fasta()
-		
-		seqdict = ff.sequences
-		
-		self.convert_protein_seqs_in_mem(seqdict)
-		
-	def convert_protein_seqs_in_mem(self, contents):
-		#Clean up.
-		self.proteins_to_search = []
-		
-		for protein in contents:
-			#Skip a protein if it's longer than 100k AA.
-			if len(contents[protein]) >= 100000:
-				continue
-			as_bytes = protein.encode()
-			#Pyhmmer digitization of sequences for searching.
-			easel_seq = pyhmmer.easel.TextSequence(name = as_bytes, sequence = contents[protein])
-			easel_seq = easel_seq.digitize(self.amino_easel)
-			self.proteins_to_search.append(easel_seq)
-			
-		easel_seq = None
-		
-	def search_protein(self):
-		top_hits = list(pyhmmer.hmmsearch(self.hmm_models, self.proteins_to_search, cpus=1, bit_cutoffs="trusted"))
-		
-		self.printable_lines = []
-		
-		self.hmm_result_proteins = []
-		self.hmm_result_accessions = []
-		self.hmm_result_scores = []
-		
-		for model in top_hits:
-			for hit in model:
-				target_name = normalise_pyhmmer_text(hit.name)
-				target_acc = normalise_pyhmmer_text(hit.accession)
-				if target_acc is None:
-					target_acc = "-"
-				
-				query_name = normalise_pyhmmer_text(hit.best_domain.alignment.hmm_name)
-				query_acc = normalise_pyhmmer_text(hit.best_domain.alignment.hmm_accession)
-				
-				full_seq_evalue = "%.2g" % hit.evalue
-				full_seq_score = round(hit.score, 1)
-				full_seq_bias = round(hit.bias, 1)
-				
-				best_dom_evalue = "%.2g" % hit.best_domain.alignment.domain.i_evalue
-				best_dom_score = round(hit.best_domain.alignment.domain.score, 1)
-				best_dom_bias = round(hit.best_domain.alignment.domain.bias, 1)
-
-				#I don't know how to get most of these values.
-				exp = 0
-				reg = 0
-				clu = 0
-				ov  = 0
-				env = 0
-				dom = len(hit.domains)
-				rep = 0
-				inc = 0
-				
-				try:
-					description = self.protein_descriptions[target_name]
-				except:
-					description = ""
-				
-				writeout = [target_name, target_acc, query_name, query_acc, full_seq_evalue, \
-				full_seq_score, full_seq_bias, best_dom_evalue, best_dom_score, best_dom_bias, \
-				exp, reg, clu, ov, env, dom, rep, inc, description]
-				
-				#Format and join.
-				writeout = [str(i) for i in writeout]
-				writeout = '\t'.join(writeout)
-				
-				self.printable_lines.append(writeout)
-				
-				self.hmm_result_proteins.append(target_name)
-				self.hmm_result_accessions.append(query_acc)
-				self.hmm_result_scores.append(best_dom_score)
-						
-	def filter_to_best_hits(self, best_hit_per_scp = True, reciprocal_best_hit = True):
-		hmm_file = np.transpose(np.array([self.hmm_result_proteins, self.hmm_result_accessions, self.hmm_result_scores]))
-		
-		#hmm_file = np.loadtxt(hmm_file_name, comments = '#', usecols = (0, 3, 8), dtype=(str))
-		#Sort the hmm file based on the score column in descending order.
-		hmm_file = hmm_file[hmm_file[:,2].astype(float).argsort()[::-1]]
-		
-		if best_hit_per_scp:
-			#Filter the file again for the unique ACCESSION names, since we're only allowed one gene per accession, I guess?
-			#Don't sort the indices, we don't care about the scores anymore.
-			hmm_file = hmm_file[np.sort(np.unique(hmm_file[:,1], return_index = True)[1])]
-			
-		if reciprocal_best_hit:
-			#Identify the first row where each gene name appears, after sorting by score; 
-			#in effect, return the highest scoring assignment per gene name
-			#Sort the indices of the result to match the score-sorted table instead of alphabetical order of gene names
-			hmm_file = hmm_file[np.sort(np.unique(hmm_file[:,0], return_index = True)[1])]
-		
-		#sql_friendly_names = [i.replace(".", "_") for i in hmm_file[:,1]]
-		#self.best_hits = dict(zip(hmm_file[:,0], sql_friendly_names))
-		self.best_hits = dict(zip(hmm_file[:,0], hmm_file[:,1]))
-		
-		hmm_file = None
-
-	def to_hmm_file(self, output):
-		if output is not None:
-			#PyHMMER data is a bit hard to parse. For each result:
-			
-			content = '\n'.join(self.printable_lines) + '\n'
-			
-			if self.do_compress:
-					
-				content = content.encode()
-							
-				fh = gzip.open(output+".gz", "wb")
-				fh.write(content)
-				fh.close()
-				content = None
-				
-			else:
-					
-				fh = open(output, "w")
-				
-				fh.write(content)
-					
-				fh.close()
-				
-			content = None
-	
 def hmm_preproc_initializer(hmm_file, do_compress = False):
 	global hmm_manager
 	hmm_manager = pyhmmer_manager(do_compress)
 	hmm_manager.load_hmm_from_file(hmm_file)
 	
-class new_pyrodigal_manager:
-	def __init__(self, trans_tables = [11, 4], meta = False, verbose = True):
-		self.genome_dict = None
+class pyrodigal_manager:
+	def __init__(self, file = None, aa_out = None, nt_out = None, is_meta = False, full_headers = True, trans_table = 11,
+				num_bp_fmt = True, verbose = True, do_compress = "0", compare_against = None):
+		#Input NT sequences
+		self.file = file
+		
+		#List of seqs read from input file.
+		self.sequences = None
+		#Concatenation of up to first 32 million bp in self.sequences - prodigal caps at this point.
 		self.training_seq = None
 		
-		self.genome_length = 0
+		#Predicted genes go here
+		self.predicted_genes = None
+		#Record the translation table used.
+		self.trans_table = trans_table
 		
-		self.meta = meta
+		#This is the pyrodigal manager - this does the gene predicting.
+		self.manager = pd.OrfFinder(meta=is_meta)
+		self.is_meta = is_meta
+		
+		#Full prodigal header information includes more than just a protein number.
+		#If full_headers is true, protein deflines will match prodigal; else, just protein ID.
+		self.full_headers = full_headers
+		
+		#Prodigal prints info to console. I enhanced the info and made printing default, but also allow them to be totally turned off.
 		self.verbose = verbose
 		
-		self.training_seq = None
-		self.gene_finder = None
+		#Prodigal formats outputs with 70 bases per line max
+		self.num_bp_fmt = num_bp_fmt
 		
-		self.coding_bases_by_table = {}
-		self.coding_density_by_table = {}
+		#File names for outputs
+		self.aa_out = aa_out
+		self.nt_out = nt_out
 		
-		self.trans_tables = trans_tables
+		#List of proteins in excess of 100K base pairs (HMMER's limit) and their lengths. This is also fastAAI specific.
+		self.excluded_seqs = {}
 		
-		self.current_genes = None
-		self.winning_coding_dens = 0
-		self.winning_table = None
+		#Gzip outputs if asked.
+		self.compress = do_compress
 		
-		self.genes_nt = None
-		self.genes_aa = None
+		self.labeled_proteins = None
 		
-		self.protein_seqs = {}
+		#Normally, we don't need to keep an input sequence after it's had proteins predicted for it - however
+		#For FastAAI and MiGA's purposes, comparisons of two translation tables is necessary.
+		#Rather than re-importing sequences and reconstructing the training sequences, 
+		#keep them for faster repredict with less I/O
+		self.compare_to = compare_against
+		if self.compare_to is not None:
+			self.keep_seqs = True
+			self.keep_after_train = True
+		else:
+			self.keep_seqs = False
+			self.keep_after_train = False
+	
+	#Imports a fasta as binary.
+	def import_sequences(self):
+		if self.sequences is None:
+			self.sequences = {}
+			
+		#check for zipped and import as needed.
+		with open(self.file, 'rb') as test_gz:
+			#Gzip magic number
+			is_gz = (test_gz.read(2) == b'\x1f\x8b')
 		
-	#Reset to initial conditions so that the current use of this object doesn't interfere with the next
-	def reset(self):
-		self.genome_dict = None
-		self.training_seq = None
+		if is_gz:
+			fh = gzip.open(self.file, mode = 'rt')
+		else:
+			fh = open(self.file, "r")
 		
-		self.genome_length = 0
+		imp = fh.readlines()
 		
-		self.training_seq = None
-		self.gene_finder = None
+		fh.close()
 		
-		self.coding_bases_by_table = {}
-		self.coding_density_by_table = {}
-				
-		self.current_genes = None
-		self.winning_coding_dens = 0
-		self.winning_table = None
+		cur_seq = None
+		for s in imp:
+			#s = s.decode().strip()
+			s = s.strip()
+			#> is 62 in ascii. This is asking if the first character is '>'
+			if s.startswith(">"):
+				#Skip first cycle, then do for each after
+				if cur_seq is not None:
+					self.sequences[cur_seq] = ''.join(self.sequences[cur_seq])
+					self.sequences[cur_seq] = self.sequences[cur_seq].encode()
+					#print(cur_seq, len(self.sequences[cur_seq]))
+				cur_seq = s[1:]
+				cur_seq = cur_seq.split()[0] #Grab only seqid
+				cur_seq = cur_seq.encode('utf-8') #Encode to bytestring for pyrodigal.
+				self.sequences[cur_seq] = []
+			else:
+				self.sequences[cur_seq].append(s)
 		
-		self.genes_nt = None
-		self.genes_aa = None
+		#Final set
+		self.sequences[cur_seq] = ''.join(self.sequences[cur_seq])
+		self.sequences[cur_seq] = self.sequences[cur_seq].encode()
 		
-		self.protein_seqs = {}
+		#Now we have the data, go to training.
+		if not self.is_meta:
+			self.train_manager()
 		
-	def load_genome_from_file(self, genome_file):
-		ff = fasta_file(genome_file)
-		ff.import_fasta()
-		
-		self.prep_genome_dict_for_prediction(ff.sequences)
-		
-	def prep_genome_dict_for_prediction(self, genome_dict):
-		self.reset()
-		
-		self.genome_dict = {}
-		for g in genome_dict:
-			#asbytes = g.encode(encoding = "ascii")
-			self.genome_length += len(genome_dict[g])
-			self.genome_dict[g] = genome_dict[g].encode(encoding = "ascii")
-		
-	def prep_training_seq(self):
+	#Collect up to the first 32 million bases for use in training seq.
+	def train_manager(self):
 		running_sum = 0
 		seqs_added = 0
 		if self.training_seq is None:
 			self.training_seq = []
-			for seq in self.genome_dict:
-				running_sum += len(self.genome_dict[seq])
+			for seq in self.sequences:
+				running_sum += len(self.sequences[seq])
 				if seqs_added > 0:
 					#Prodigal interleaving logic - add this breaker between sequences, starting at sequence 2
 					self.training_seq.append(b'TTAATTAATTAA')
@@ -741,7 +602,7 @@ class new_pyrodigal_manager:
 					to_remove = running_sum - 32000000
 					
 					#Remove excess characters
-					cut_seq = self.genome_dict[seq][:-to_remove]
+					cut_seq = self.sequences[seq][:-to_remove]
 					#Add the partial seq
 					self.training_seq.append(cut_seq)
 					
@@ -749,7 +610,7 @@ class new_pyrodigal_manager:
 					break
 				
 				#add in a full sequence
-				self.training_seq.append(self.genome_dict[seq])
+				self.training_seq.append(self.sequences[seq])
 
 			if seqs_added > 1:
 				self.training_seq.append(b'TTAATTAATTAA')
@@ -759,137 +620,230 @@ class new_pyrodigal_manager:
 		if len(self.training_seq) < 20000:
 			if self.verbose:
 				print("Can't train on 20 thousand or fewer characters. Switching to meta mode.")
-			self.manager = pd.GeneFinder(meta=True)
-			self.meta = Trues
+			self.manager = pd.OrfFinder(meta=True)
+			self.is_meta = True
 		else:
 			if self.verbose:
+				print("")
 				#G is 71, C is 67; we're counting G + C and dividing by the total.
 				gc = round(((self.training_seq.count(67) + self.training_seq.count(71))/ len(self.training_seq)) * 100, 2)
-				print(len(self.training_seq), "bp training seq created,", gc, "pct GC")
+				print(len(self.training_seq), "bp seq created,", gc, "pct GC")
 				
-	def train(self, table = 11):
-		if not self.meta:
-			self.gene_finder = pd.GeneFinder(meta = False)
-			self.gene_finder.train(self.training_seq, translation_table = table)
+			#Train
+			self.manager.train(self.training_seq, translation_table = self.trans_table)
+		
+		if not self.keep_after_train:
+			#Clean up
+			self.training_seq = None
+		
+	def predict_genes(self):
+		if self.is_meta:
+			if self.verbose:
+				print("Finding genes in metagenomic mode")
 		else:
-			self.gene_finder = pd.GeneFinder(meta = True)
+			if self.verbose:
+				print("Finding genes with translation table", self.trans_table)
+				print("")
 			
-	def predict(self):
-		current_table = self.gene_finder.training_info.translation_table
-		
-		if current_table is None:
-			current_table = "meta"
+		self.predicted_genes = {}
+		for seq in self.sequences:
 			
-		self.coding_bases_by_table[current_table] = 0
-		
-		next_gene_set = {}
-		
-		if self.gene_finder is not None:
-			for seq in self.genome_dict:
-				genes = self.gene_finder.find_genes(self.genome_dict[seq])
-				next_gene_set[seq] = genes
-				for g in genes:	
-					self.coding_bases_by_table[current_table] += len(g.sequence())
-		
-		self.coding_density_by_table[current_table] = self.coding_bases_by_table[current_table] / self.genome_length
-		
-		if self.current_genes is None:
-			self.current_genes = next_gene_set
-			self.winning_coding_dens = self.coding_density_by_table[current_table]
-			self.winning_table = current_table
+			if self.verbose:
+				print("Finding genes in sequence", seq.decode(), "("+str(len(self.sequences[seq]))+ " bp)... ", end = '')
+				
+			self.predicted_genes[seq] = self.manager.find_genes(self.sequences[seq])
+				
+			#If we're comparing multiple tables, then we want to keep these for re-prediction.
+			if not self.keep_seqs:
+				#Clean up
+				self.sequences[seq] = None
+			
+			if self.verbose:
+				print("done!")
+			
+	#Predict genes with an alternative table, compare results, and keep the winner.	
+	def compare_alternative_table(self, table):
+		if table == self.trans_table:
+			print("You're trying to compare table", table, "with itself.")
 		else:
-			if self.coding_density_by_table[current_table] > (self.winning_coding_dens * 1.1):
+			if self.verbose:
+				print("Comparing translation table", self.trans_table, "against table", table)
+			old_table = self.trans_table
+			old_genes = self.predicted_genes
+			old_size = 0
+			for seq in self.predicted_genes:
+				for gene in self.predicted_genes[seq]:
+					old_size += (gene.end - gene.begin)
+			
+			self.trans_table = table
+			self.train_manager()
+			self.predict_genes()
+				
+			new_size = 0
+			for seq in self.predicted_genes:
+				for gene in self.predicted_genes[seq]:
+					new_size += (gene.end - gene.begin)
+			
+			if (old_size / new_size) > 1.1:
 				if self.verbose:
-					print("Translation table", self.winning_table, "had coding density of", self.winning_coding_dens)
-					print("New translation table", current_table, "more than 10% better, coding density of", self.coding_density_by_table[current_table])
-					print("New table's predicted genes will be used")
-				self.current_genes = next_gene_set
-				self.winning_coding_dens = self.coding_density_by_table[current_table]
-				self.winning_table = current_table
-				
-	#def genes_to_mem(self, current_genes):
-	def genes_to_mem(self):
-		self.protein_seqs = {}
-		for seq in self.current_genes:
-		#for seq in current_genes:
-			self.protein_seqs[seq] = {}
-			seqid = 1
-			for g in self.current_genes[seq]:
-			#for g in current_genes[seq]:
-				gene_name = seq + "_" + str(seqid)
-				seqid += 1
-				self.protein_seqs[seq][seqid] = g.translate(None)
-			
-	def write_nt(self, compress = False, outfile = None):
-		if outfile is not None:
-			self.genes_nt = io.StringIO("")
-			sz = 0
-			for seq in self.current_genes:
-				sz += len(self.current_genes[seq])
-				self.current_genes[seq].write_genes(self.genes_nt, seq)
-				
-			self.genes_nt = self.genes_nt.getvalue()
-			
-			if compress:
-				self.genes_nt = self.genes_nt.encode(encoding = "ascii")
-				self.genes_nt = gzip.compress(self.genes_nt)
-				with open(outfile+".gz", 'wb') as out:
-					out.write(self.genes_nt)
+					print("Translation table", self.trans_table, "performed better than table", old_table, "and will be used instead.")
 			else:
-				with open(outfile, "w") as out:
-					out.write(self.genes_nt)
-						
-			#This never needs returned in fastaai
-			self.genes_nt = None
+				if self.verbose:
+					print("Translation table", self.trans_table, "did not perform significantly better than table", old_table, "and will not be used.")
+				self.trans_table = old_table
+				self.predicted_genes = old_genes
 			
-	def write_aa(self, compress = False, outfile = None):
-		if outfile is not None:
-			self.genes_aa = io.StringIO("")
-			
-			for seq in self.current_genes:
-				self.current_genes[seq].write_translations(self.genes_aa, seq)
-				
-			self.genes_aa = self.genes_aa.getvalue()
+			#cleanup
+			old_table = None
+			old_genes = None
+			old_size = None
+			new_size = None
 		
-			if compress:
-				self.genes_aa = self.genes_aa.encode(encoding = "ascii")
-				with gzip.open(outfile+".gz", 'wb') as out:
-					out.write(self.genes_aa)
-			else:
-				with open(outfile, "w") as out:
-					out.write(self.genes_aa)
+	def predict_and_compare(self):
+		self.predict_genes()
+	
+		#Run alt comparisons in gene predict.
+		if self.compare_to is not None:
+			while len(self.compare_to) > 0:
+				try:
+					next_table = int(self.compare_to.pop(0))
 					
-			self.genes_aa = None
-
-	def run_for_fastaai(self, genome_file, compress = False, outnt = None, outaa = None):
-		self.load_genome_from_file(genome_file)
-		self.prep_training_seq()
-		for table in self.trans_tables:
-			self.train(table = table)
-			self.predict()
-			#print(len(mn.current_genes))
+					if len(self.compare_to) == 0:
+						#Ready to clean up.
+						self.keep_after_train = True
+						self.keep_seqs = True
+					
+					self.compare_alternative_table(next_table)
+				except:
+					print("Alternative table comparison failed! Skipping.")
+		
+	#Break lines into size base pairs per line. Prodigal's default for bp is 70, aa is 60.
+	def num_bp_line_format(self, string, size = 70):
+		#ceiling funciton without the math module
+		ceiling = int(round((len(string)/size)+0.5, 0))
+		formatted = '\n'.join([string[(i*size):(i+1)*size] for i in range(0, ceiling)])
+		return formatted
+	
+	#Writeouts
+	def write_nt(self):
+		if self.nt_out is not None:
+			if self.verbose:
+				print("Writing nucleotide sequences... ")
+			if self.compress == '1' or self.compress == '2':
+				out_writer = gzip.open(self.nt_out+".gz", "wb")
+				
+				content = b''
+				
+				for seq in self.predicted_genes:
+					seqname = b">"+ seq + b"_"
+					#Gene counter
+					count = 1
+					for gene in self.predicted_genes[seq]:
+						#Full header lines
+						if self.full_headers:
+							content += b' # '.join([seqname + str(count).encode(), str(gene.begin).encode(), str(gene.end).encode(), str(gene.strand).encode(), gene._gene_data.encode()])
+						else:
+							#Reduced headers if we don't care.
+							content += seqname + str(count).encode()
+							
+						content += b'\n'
+							
+						if self.num_bp_fmt:
+							#60 bp cap per line
+							content += self.num_bp_line_format(gene.sequence(), size = 70).encode()
+						else:
+							#One-line sequence.
+							content += gene.sequence().encode()
+							
+						content += b'\n'
+						count += 1
+				
+				out_writer.write(content)
+				out_writer.close()
 			
-		self.genes_to_mem()
+			if self.compress == '0' or self.compress == '2':
+				out_writer = open(self.nt_out, "w")
+			
+				for seq in self.predicted_genes:
+					#Only do this decode once.
+					seqname = ">"+ seq.decode() +"_"
+					#Gene counter
+					count = 1
+					
+					for gene in self.predicted_genes[seq]:
+						#Full header lines
+						if self.full_headers:
+							#Standard prodigal header
+							print(seqname + str(count), gene.begin, gene.end, gene.strand, gene._gene_data, sep = " # ", file = out_writer)
+						else:
+							#Reduced headers if we don't care.
+							print(seqname + str(count), file = out_writer)
+							
+						if self.num_bp_fmt:
+							#60 bp cap per line
+							print(self.num_bp_line_format(gene.sequence(), size = 70), file = out_writer)
+						else:
+							#One-line sequence.
+							print(gene.sequence(), file = out_writer)
+							
+						count += 1
+							
+				out_writer.close()
 		
-		self.write_nt(compress = compress, outfile = outnt)
-		self.write_aa(compress = compress, outfile = outaa)
-		
-		#return self.protein_seqs
-		
-
+	def write_aa(self):
+		if self.aa_out is not None:
+			if self.verbose:
+				print("Writing amino acid sequences...")
+				
+			self.labeled_proteins = {}
+			content = ''
+			for seq in self.predicted_genes:
+				count = 1
+				seqname = ">"+ seq.decode() + "_"
+				for gene in self.predicted_genes[seq]:
+					prot_name = seqname + str(count)
+					translation = gene.translate()
+					self.labeled_proteins[prot_name[1:]] = translation
+					defline = " # ".join([prot_name, str(gene.begin), str(gene.end), str(gene.strand), str(gene._gene_data)])
+					content += defline
+					content += "\n"
+					count += 1
+					content += self.num_bp_line_format(translation, size = 60)
+					content += "\n"					
+				
+			if self.compress == '0' or self.compress == '2':
+				out_writer = open(self.aa_out, "w")
+				out_writer.write(content)
+				out_writer.close()
+				
+			if self.compress == '1' or self.compress == '2':
+				content = content.encode()
+				out_writer = gzip.open(self.aa_out+".gz", "wb")
+				out_writer.write(content)
+				out_writer.close()
+				
+	def run_for_fastaai(self):
+		self.verbose = False
+		self.import_sequences()
+		self.train_manager()
+		self.predict_and_compare()
+		self.write_aa()
 	
 #Iterator for agnostic reader
 class agnostic_reader_iterator:
 	def __init__(self, reader):
 		self.handle_ = reader.handle
-		self.path_ = reader.path
+		self.is_gz_ = reader.is_gz
 		
 	def __next__(self):
-		line = self.handle_.readline()
+		if self.is_gz_:
+			line = self.handle_.readline().decode()
+		else:
+			line = self.handle_.readline()
 		
 		#Ezpz EOF check
 		if line:
-			return decode_text_buffer(line, self.path_)
+			return line
 		else:
 			raise StopIteration
 
@@ -905,17 +859,12 @@ class agnostic_reader:
 		self.is_gz = is_gz
 		
 		if is_gz:
-			self.handle = gzip.open(self.path, "rb")
+			self.handle = gzip.open(self.path)
 		else:
-			self.handle = open(self.path, "rb")
+			self.handle = open(self.path)
 			
 	def __iter__(self):
 		return agnostic_reader_iterator(self)
-
-	def read(self):
-		"""Return the full file contents as text."""
-		contents = self.handle.read()
-		return decode_text_buffer(contents, self.path)
 		
 	def close(self):
 		self.handle.close()
@@ -928,7 +877,8 @@ Takes a file or files and processes them from genome -> protein, protein -> hmm,
 '''
 
 class input_file:
-	def __init__(self, input_path, output = "", verbosity = False, do_compress = False, make_crystal = False, write_outputs = True):
+	def __init__(self, input_path, output = "", verbosity = False, do_compress = False, 
+	make_crystal = False):
 		#starting path for the file; irrelevant for protein and hmm, but otherwise useful for keeping track.
 		self.path = input_path
 		#Output directory starts with this
@@ -962,7 +912,6 @@ class input_file:
 		
 		self.ran_hmmer = False
 		
-		self.pyrodigal_manager = None
 		#If pyrodigal is run, then the protein sequences are already loaded into memory. 
 		#We reuse them in kmer extraction instead of another I/O
 		self.prepared_proteins = None
@@ -990,52 +939,32 @@ class input_file:
 		
 		self.do_compress = do_compress
 	
-		self.crystal_record = None
 		self.crystal = None
 		
 		self.init_time = None
-		#default to 0 time
+		#default to 0 time.
 		self.prot_pred_time = None
 		self.hmm_search_time = None
 		self.besthits_time = None
-		
-		self.write_outputs = write_outputs
 	
 	def curtime(self):
 		time_format = "%d/%m/%Y %H:%M:%S"
 		timer = datetime.datetime.now()
 		time = timer.strftime(time_format)
 		return time
-
-	def _timing_value(self, start_value, end_value):
-		"""Return one timing stage in seconds."""
-		if end_value is None:
-			return 0.0
-		if isinstance(end_value, datetime.datetime):
-			if not isinstance(start_value, datetime.datetime):
-				raise TypeError("Timing values must be datetime objects before conversion.")
-			return (end_value - start_value).total_seconds()
-		return float(end_value)
-
-	def get_partial_timings(self):
-		"""Return preprocessing stage durations in seconds."""
-		protein_pred = self._timing_value(self.init_time, self.prot_pred_time)
-		hmm_search = self._timing_value(self.prot_pred_time, self.hmm_search_time)
-		besthits = self._timing_value(self.hmm_search_time, self.besthits_time)
-		return protein_pred, hmm_search, besthits
 		
 	def partial_timings(self):
-		"""Format preprocessing stage durations for console output."""
-		protein_pred, hmm_search, besthits = self.get_partial_timings()
-		return (
-			"Protein prediction: "
-			+ str(round(protein_pred, 2))
-			+ "s | HMM search: "
-			+ str(round(hmm_search, 2))
-			+ "s | Best hits: "
-			+ str(round(besthits, 2))
-			+ "s"
-		)
+		protein_pred = self.prot_pred_time-self.init_time
+		hmm_search = self.hmm_search_time-self.prot_pred_time
+		besthits = self.besthits_time-self.hmm_search_time
+		
+		protein_pred = protein_pred.total_seconds()
+		hmm_search = hmm_search.total_seconds()
+		besthits = besthits.total_seconds()
+		
+		self.prot_pred_time = protein_pred
+		self.hmm_search_time = hmm_search
+		self.besthits_time = besthits
 	
 	#Functions for externally setting status and file paths of particular types
 	def set_genome(self, path):
@@ -1060,35 +989,25 @@ class input_file:
 	def genome_to_protein(self):
 		if self.genome is None:
 			print(self.name, "wasn't a declared as a genome! I can't make this into a protein!")
-		else:
-			if self.write_outputs:
-				protein_output = os.path.normpath(self.output + "/predicted_proteins/" + self.basename + '.faa')
-			else:
-				protein_output = None
+		else:		
+			protein_output = os.path.normpath(self.output + "/predicted_proteins/" + self.basename + '.faa')
 					
 			if self.do_compress:
 				compress_level = "1"
 			else:
 				compress_level = "0"
 			
-			#
-			self.pyrodigal_manager = new_pyrodigal_manager(trans_tables = [11, 4], meta = False, verbose = False)
-			#self, genome_file, compress = False, outnt = None, outaa = None
-			self.pyrodigal_manager.run_for_fastaai(genome_file = self.genome, outaa = protein_output, compress = self.do_compress)
+			mn = pyrodigal_manager(file = self.genome, aa_out = protein_output, compare_against = [4], do_compress = compress_level)
+			mn.run_for_fastaai()
 			
-			self.trans_table = str(self.pyrodigal_manager.winning_table)
+			self.trans_table = str(mn.trans_table)
 			
-			self.prepared_proteins = {}
-			excluded_seqs = {}
-			for seq in self.pyrodigal_manager.protein_seqs:
-				for seqid in self.pyrodigal_manager.protein_seqs[seq]:
-					prot_name = seq+"_"+str(seqid)
-					prot_length = len(self.pyrodigal_manager.protein_seqs[seq][seqid])
-					if prot_length > 99999:
-						self.err_log += "Protein " + prot_name + " was observed to have >100K amino acids ( " + str(prot_length) + " AA found ). It will not be included in predicted proteins for this genome;"
-					else:
-						self.prepared_proteins[prot_name] = self.pyrodigal_manager.protein_seqs[seq][seqid]
-
+			for prot in mn.excluded_seqs:
+				self.err_log += "Protein " + prot + " was observed to have >100K amino acids ( " + str(mn.excluded_seqs[prot]) + " AA found ). It will not be included in predicted proteins for this genome;"
+			
+			self.prepared_proteins = mn.labeled_proteins
+			
+			del mn
 			
 			#If there are zipped files leftover and we didn't want them, clean them up.
 			if self.do_compress:
@@ -1111,11 +1030,8 @@ class input_file:
 		else:
 
 			folder = os.path.normpath(self.output + "/hmms")
-			
-			if self.write_outputs:
-				hmm_output = os.path.normpath(folder +"/"+ self.basename + '.hmm')
-			else:
-				hmm_output = None
+						
+			hmm_output = os.path.normpath(folder +"/"+ self.basename + '.hmm')
 			
 			if self.prepared_proteins is None:
 				self.prepared_proteins, deflines = read_fasta(self.protein)
@@ -1220,7 +1136,7 @@ class input_file:
 		self.best_hits_kmers = {}
 		
 		if self.crystalize:
-			self.crystal_record = []
+			crystal_record = []
 			
 		#Kmerize proteins and record metadata
 		for protein in self.prepared_proteins:
@@ -1228,7 +1144,7 @@ class input_file:
 				accession = self.best_hits[protein]
 				
 				if self.crystalize:
-					self.crystal_record.append(str(protein)+"\t"+str(accession)+"\t"+str(self.prepared_proteins[protein])+"\n")
+					crystal_record.append(str(protein)+"\t"+str(accession)+"\t"+str(self.prepared_proteins[protein])+"\n")
 				
 				kmer_set = self.unique_kmer_simple_key(self.prepared_proteins[protein])
 				self.protein_kmer_count[accession] = kmer_set.shape[0]
@@ -1241,21 +1157,19 @@ class input_file:
 			
 		if self.crystalize:
 			#only make a crystal if it actually has content.
-			if len(self.crystal_record) > 0:
+			if len(crystal_record) > 0:
 				crystal_path = os.path.normpath(self.output + "/crystals/" + self.basename + '_faai_crystal.txt')
-				self.crystal_record = "".join(self.crystal_record)
+				crystal_record = "".join(crystal_record)
 				
 				if self.do_compress:
-					self.crystal_record = self.crystal_record.encode()
-					if self.write_outputs:
-						crystal_writer = gzip.open(crystal_path+".gz", "wb")
-						crystal_writer.write(self.crystal_record)
-						crystal_writer.close()
+					crystal_record = crystal_record.encode()
+					crystal_writer = gzip.open(crystal_path+".gz", "wb")
+					crystal_writer.write(crystal_record)
+					crystal_writer.close()
 				else:
-					if self.write_outputs:
-						crystal_writer = open(crystal_path, "w")
-						crystal_writer.write(self.crystal_record)
-						crystal_writer.close()
+					crystal_writer = open(crystal_path, "w")
+					crystal_writer.write(crystal_record)
+					crystal_writer.close()
 			
 		#Final free.
 		self.prepared_proteins = None
@@ -1319,27 +1233,7 @@ class input_file:
 		if self.trans_table is None:
 			self.trans_table = "unknown"
 		
-		self.prot_pred_time, self.hmm_search_time, self.besthits_time = self.get_partial_timings()
-		
-	def add_triplet(self, genome_path = None, protein_path = None, hmm_path = None):
-		if genome_path is not None:
-			if os.path.exists(genome_path):
-				self.set_genome(genome_path)
-			else:
-				print("Genome file", genome_path, "not found!")
-				
-		if protein_path is not None:
-			if os.path.exists(protein_path):
-				self.set_protein(protein_path)
-			else:
-				print("Protein file", protein_path, "not found!")
-				
-		if hmm_path is not None:
-			if os.path.exists(hmm_path):
-				self.set_hmm(hmm_path)
-			else:
-				print("HMM file", hmm_path, "not found!")
-		
+		self.partial_timings()
 
 '''
 Utility functions
@@ -1861,7 +1755,7 @@ def file_v_db_worker(query_args):
 		results = []
 		shared_acc_counts = []
 	else:
-		results = np.zeros(shape = num_tgts, dtype = np.float64)
+		results = np.zeros(shape = num_tgts, dtype = np.float_)
 		shared_acc_counts = np.zeros(shape = num_tgts, dtype = np.int32)
 	
 	if db_is_in_mem:
@@ -1911,7 +1805,8 @@ def file_v_db_worker(query_args):
 				#Each kmer needs to be a tuple.
 				these_kmers = [(int(kmer),) for kmer in one]
 			
-				temp_name = build_temp_table_name(qname, acc)
+				temp_name = "_" + qname +"_" + acc
+				temp_name = temp_name.replace(".", "_")
 				
 				tcurs.execute("CREATE TEMP TABLE " + temp_name + " (kmer INTEGER)")
 				tconn.commit()
@@ -2728,33 +2623,31 @@ def parse_accession(acc):
 		pickle.dump([ql, tl], out)
 		
 	return([acc, out_file])
-
-
-def flatten_cached_targets(target_hits, selection):
-	"""Return cached target-hit arrays as one flat integer array."""
-	if len(selection) == 0:
-		return np.empty(0, dtype = np.int32)
-
-	selected_hits = [target_hits[int(index)] for index in selection]
-	if len(selected_hits) == 1:
-		return np.asarray(selected_hits[0], dtype = np.int32)
-
-	return np.concatenate(selected_hits).astype(np.int32, copy = False)
 			
 #all of this is exclusive to the in-mem approach for db db query
-def one_init(ql, tl, num_tgt, tgak, tpres, sd, sty, output_dir, store_results, progress_queue, qnames, tnames, temp_dir):
+def one_init(ql, tl, num_tgt, qgak_queue, tgak, tpres, sd, sty, output_dir, store_results, progress_queue, qnames, tnames, temp_dir):
 	global _ql
 	_ql = ql
 	global _tl
 	_tl = tl
 	global _nt
 	_nt = num_tgt
-
+	
+	qgak_data = qgak_queue.get()
+	
 	global out_base
 	out_base = output_dir
-
-	global temp_path
-	temp_path = temp_dir
+	
+	global group_id
+	group_id = os.path.normpath(temp_dir + "/partial_results_group_" + str(qgak_data[0])+ ".txt")
+	
+	global _qgak
+	_qgak = qgak_data[1]
+	
+	global query_grouping
+	query_grouping = qgak_data[2]
+	
+	qgak_data = None
 	
 	global _tgak
 	_tgak = tgak
@@ -2774,6 +2667,12 @@ def one_init(ql, tl, num_tgt, tgak, tpres, sd, sty, output_dir, store_results, p
 	
 	global store
 	store = store_results
+	if store:
+		global holder
+		holder = []
+	else:
+		global outwriter
+		outwriter = open(group_id, "w")
 		
 	global prog_queue
 	prog_queue = progress_queue
@@ -2784,87 +2683,102 @@ def one_init(ql, tl, num_tgt, tgak, tpres, sd, sty, output_dir, store_results, p
 	global _tnames
 	_tnames = tnames
 	
-def one_work(task):
-	task_id, local_qgak, query_grouping = task
-	group_id = os.path.normpath(temp_path + "/partial_results_group_" + str(task_id)+ ".txt")
-	holder = []
-	outwriter = None
-	if style == "matrix" and not store:
-		outwriter = open(group_id, "w")
-
-	try:
-		for q in query_grouping:
-			results = []
-			for acc in local_qgak[q][0]:
-				if acc in _ql[q]:
-					these_intersections = np.bincount(
-						flatten_cached_targets(_tl[acc], _ql[q][acc]),
-						minlength = _nt,
-					)
-				else:
-					these_intersections = np.zeros(_nt, dtype = np.int32)
-				results.append(these_intersections)
-
-			results = np.vstack(results)
-			target_kmer_counts = _tgak[local_qgak[q][0], :]
-			unions = np.subtract(np.add(target_kmer_counts, local_qgak[q][1][:, None]), results)
-			results = np.divide(results, unions)
-			shared_acc_counts = np.sum(_tpres[local_qgak[q][0], :], axis = 0)
-			no_hit = np.where(shared_acc_counts == 0)
-			jaccard_averages = np.divide(np.sum(results, axis = 0), shared_acc_counts)
-
-			if style == "tsv":
-				aai_ests = numpy_kaai_to_aai(jaccard_averages)
-
-				if do_sd:
-					results = results - jaccard_averages
-					results[np.logical_not(_tpres[local_qgak[q][0], :])] = 0
-					results = np.square(results)
-					jaccard_SDs = np.sqrt(np.divide(np.sum(results, axis = 0), shared_acc_counts))
-					jaccard_SDs = np.round(jaccard_SDs, 4).astype(str)
-				
-				possible_hits = np.minimum(local_qgak[q][0].shape[0], _tct).astype(str)
-				jaccard_averages = np.round(jaccard_averages, 4).astype(str)
-				shared_acc_counts = shared_acc_counts.astype(str)
-				jaccard_averages[no_hit] = "N/A"
-				aai_ests[no_hit] = "N/A"
-				shared_acc_counts[no_hit] = "N/A"
-				possible_hits[no_hit] = "N/A"
-				
-				qname = _qnames[q]
-				output_name = os.path.normpath(out_base + "/results/"+qname+"_results.txt")
-				out = open(output_name, "w")
-				out.write("query\ttarget\tavg_jacc_sim\tjacc_SD\tnum_shared_SCPs\tposs_shared_SCPs\tAAI_estimate\n")
-				if do_sd:
-					jaccard_SDs[no_hit] = "N/A"
-					for i in range(0, len(aai_ests)):
-						out.write(qname+"\t"+_tnames[i]+"\t"+jaccard_averages[i]+"\t"+jaccard_SDs[i]+"\t"+shared_acc_counts[i]+"\t"+possible_hits[i]+"\t"+aai_ests[i]+"\n")
-				else:
-					for i in range(0, len(aai_ests)):
-						out.write(qname+"\t"+_tnames[i]+"\t"+jaccard_averages[i]+"\t"+"N/A"+"\t"+shared_acc_counts[i]+"\t"+possible_hits[i]+"\t"+aai_ests[i]+"\n")
-				out.close()
+def one_work(placeholder):	
+	for q in query_grouping:
+		results = []
+		#We also need to count the accs in the query genome, but which are not part of the inner join.
+		for acc in _qgak[q][0]:
+			if acc in _ql[q]:
+				#the bincount is intersections.
+				these_intersections = np.bincount(np.concatenate(_tl[acc][_ql[q][acc]]), minlength = _nt)
 			else:
-				aai_ests = numpy_kaai_to_aai_just_nums(jaccard_averages, as_float = not store)
-				aai_ests[no_hit] = 0
-				if store:
-					holder.append(aai_ests)
-				else:
-					print(*aai_ests, sep = "\t", file = outwriter)
+				#there are no intersections even though this accession is shared with at least one target
+				#number of intersects is all zeros
+				these_intersections = np.zeros(_nt, dtype = np.int32)
+			
+			#Append the counts or zeros, either way.
+			results.append(these_intersections)
+				
+		results = np.vstack(results)
+		
+		target_kmer_counts = _tgak[_qgak[q][0], :]
+		
+		#unions = size(A) + size(B) - size(intersections(A, B)) 
+		#unions = target_kmer_counts + query_kmers_by_acc - intersections
+		unions = np.subtract(np.add(target_kmer_counts, _qgak[q][1][:, None]), results)
+		
+		#These are now jaccards, not #intersections
+		results = np.divide(results, unions)
+		
+		shared_acc_counts = np.sum(_tpres[_qgak[q][0], :], axis = 0)
+		
+		no_hit = np.where(shared_acc_counts == 0)
+		
+		jaccard_averages = np.divide(np.sum(results, axis = 0), shared_acc_counts)
 
-		result_file = None
-		if style == "matrix":
+		#Skip SD if output is matrix
+		if style == "tsv":
+			aai_ests = numpy_kaai_to_aai(jaccard_averages)
+
+			if do_sd:
+				#find diffs from means; this includes indicies corresponding to unshared SCPs that should not be included. 
+				results = results - jaccard_averages
+				
+				#fix those corresponding indicies to not contribute to the final SD.
+				results[np.logical_not(_tpres[_qgak[q][0], :])] = 0
+				#results[np.nonzero(has_accs == 0)] = 0
+				
+				#Square them; 0^2 = 0, so we don't have to think about the fixed indices any more.
+				results = np.square(results)
+				#Sum squares and divide by shared acc. count, the sqrt to get SD.
+				jaccard_SDs = np.sqrt(np.divide(np.sum(results, axis = 0), shared_acc_counts))
+				jaccard_SDs = np.round(jaccard_SDs, 4).astype(str)
+				
+			no_hit = np.where(shared_acc_counts == 0)
+			
+			#addtl.shape[0] is the query acc count
+			possible_hits = np.minimum(_qgak[q][0].shape[0], _tct).astype(str)
+			
+			jaccard_averages = np.round(jaccard_averages, 4).astype(str)
+			shared_acc_counts = shared_acc_counts.astype(str)
+			
+			jaccard_averages[no_hit] = "N/A"
+			aai_ests[no_hit] = "N/A"
+			shared_acc_counts[no_hit] = "N/A"
+			possible_hits[no_hit] = "N/A"
+				
+			qname = _qnames[q]
+				
+			output_name = os.path.normpath(out_base + "/results/"+qname+"_results.txt")
+		
+			out = open(output_name, "w")
+			out.write("query\ttarget\tavg_jacc_sim\tjacc_SD\tnum_shared_SCPs\tposs_shared_SCPs\tAAI_estimate\n")
+			if do_sd:
+				jaccard_SDs[no_hit] = "N/A"
+				for i in range(0, len(aai_ests)):
+					out.write(qname+"\t"+_tnames[i]+"\t"+jaccard_averages[i]+"\t"+jaccard_SDs[i]+"\t"+shared_acc_counts[i]+"\t"+possible_hits[i]+"\t"+aai_ests[i]+"\n")
+			else:			
+				for i in range(0, len(aai_ests)):
+					out.write(qname+"\t"+_tnames[i]+"\t"+jaccard_averages[i]+"\t"+"N/A"+"\t"+shared_acc_counts[i]+"\t"+possible_hits[i]+"\t"+aai_ests[i]+"\n")
+			out.close()
+			
+			
+		else:
 			if store:
-				if len(holder) == 0:
-					return (len(query_grouping), None)
-				hold_together = np.vstack(holder)
-				np.savetxt(group_id, hold_together, delimiter = "\t", fmt='%4d')
-				result_file = group_id
-			elif len(query_grouping) > 0:
-				result_file = group_id
-		return (len(query_grouping), result_file)
-	finally:
-		if outwriter is not None:
-			outwriter.close()
+				aai_ests = numpy_kaai_to_aai_just_nums(jaccard_averages, as_float = False)
+				aai_ests[no_hit] = 0
+				#add zeros at misses/NAs
+				holder.append(aai_ests)
+			else:
+				aai_ests = numpy_kaai_to_aai_just_nums(jaccard_averages, as_float = True)
+				aai_ests[no_hit] = 0
+				print(*aai_ests, sep = "\t", file = outwriter)
+		
+		prog_queue.put(q)
+	
+	prog_queue.put("done")
+	
+	return None
 
 def two_work(i):
 	if store:
@@ -2874,11 +2788,11 @@ def two_work(i):
 		outwriter.close()
 		
 	return group_id
-
-def on_disk_init(query_database_path, target_database_path, num_tgt, target_gak, tpres, sd, sty, output_dir, progress_queue, qnames, tnames, valids, temp_dir):
+	
+def on_disk_init(query_database_path, target_database_path, num_tgt, query_queue, target_gak, tpres, sd, sty, output_dir, progress_queue, qnames, tnames, valids, temp_dir):
 	global database
 	database = sqlite3.connect(":memory:")
-
+	
 	curs = database.cursor()
 	curs.execute("attach '" + query_database_path + "' as queries")
 	curs.execute("attach '" + target_database_path + "' as targets")
@@ -2886,12 +2800,20 @@ def on_disk_init(query_database_path, target_database_path, num_tgt, target_gak,
 	
 	global _nt
 	_nt = num_tgt
-
+	
+	qgak_data = query_queue.get()
+	
 	global out_base
 	out_base = output_dir
-
-	global temp_path
-	temp_path = temp_dir
+	
+	global group_id
+	group_id = os.path.normpath(temp_dir + "/partial_results_group_" + str(qgak_data[0])+ ".txt")
+	
+	global _qgak
+	_qgak = qgak_data[1]
+	
+	global query_grouping
+	query_grouping = qgak_data[2]
 	
 	global _tgak
 	_tgak = target_gak
@@ -2909,6 +2831,10 @@ def on_disk_init(query_database_path, target_database_path, num_tgt, target_gak,
 	#Suppress div by zero warning - it's handled.
 	np.seterr(divide='ignore')
 	
+	if style == "matrix":
+		global outwriter
+		outwriter = open(group_id, "w")
+		
 	global prog_queue
 	prog_queue = progress_queue
 	
@@ -2924,31 +2850,35 @@ def on_disk_init(query_database_path, target_database_path, num_tgt, target_gak,
 	global _valids
 	_valids = valids
 	
-def on_disk_work_one(task):
-	task_id, local_qgak, query_grouping = task
-	group_id = os.path.normpath(temp_path + "/partial_results_group_" + str(task_id)+ ".txt")
+def on_disk_work_one(placeholder):
 	curs = database.cursor()
-	output_rows = []
 	for q in query_grouping:
 		results = []
 		qname = _qnames[q]
-		for acc in local_qgak[q][0]:
+		for acc in _qgak[q][0]:
 			acc_name = acc_indexer[acc]
+				
 			if acc_name in _valids:
+				
 				one = curs.execute("SELECT kmers FROM queries."+acc_name+"_genomes WHERE genome=?", (str(q),)).fetchone()[0]
 				one = np.frombuffer(one, dtype = np.int32)
 				
 				if one.shape[0] > 998:
+					#Each kmer needs to be a tuple.
 					these_kmers = [(int(kmer),) for kmer in one]
 				
-					temp_name = build_temp_table_name(qname, acc_name)
+					temp_name = "_" + qname +"_" + acc_name
+					temp_name = temp_name.replace(".", "_")
 					
 					curs.execute("CREATE TEMP TABLE " + temp_name + " (kmer INTEGER)")
 					insert_table = "INSERT INTO " + temp_name + " VALUES (?)"
 					curs.executemany(insert_table, these_kmers)
+					
 					join_and_select_sql = "SELECT genomes FROM " + temp_name + " INNER JOIN targets." + acc_name + " ON "+ temp_name+".kmer = targets." + acc_name + ".kmer;"
+					
 					matches = curs.execute(join_and_select_sql).fetchall()
 				else:
+					#kmers must be a list, not a tuple.
 					these_kmers = [int(kmer) for kmer in one]
 					select = "SELECT genomes FROM targets." + acc_name + " WHERE kmer IN ({kmers})".format(kmers=','.join(['?']*len(these_kmers)))
 					matches = curs.execute(select, these_kmers).fetchall()
@@ -2957,39 +2887,65 @@ def on_disk_work_one(task):
 				for row in matches:
 					set.append(row[0])
 				set = b''.join(set)
+					
 				matches = None
 				these_intersections = np.bincount(np.frombuffer(set, dtype = np.int32), minlength = _nt)
 				set = None
 				results.append(these_intersections)
+				
 			else:
 				results.append(np.zeros(_nt, dtype=np.int32))
-		
+			
 		results = np.vstack(results)
-		target_kmer_counts = _tgak[local_qgak[q][0], :]
-		unions = np.subtract(np.add(target_kmer_counts, local_qgak[q][1][:, None]), results)
+		
+		target_kmer_counts = _tgak[_qgak[q][0], :]
+		
+		#unions = size(A) + size(B) - size(intersections(A, B)) 
+		#unions = target_kmer_counts + query_kmers_by_acc - intersections
+		unions = np.subtract(np.add(target_kmer_counts, _qgak[q][1][:, None]), results)
+		
+		#These are now jaccards, not #intersections
 		results = np.divide(results, unions)
-		shared_acc_counts = np.sum(_tpres[local_qgak[q][0], :], axis = 0)
+
+		shared_acc_counts = np.sum(_tpres[_qgak[q][0], :], axis = 0)
+		
 		no_hit = np.where(shared_acc_counts == 0)
+		
 		jaccard_averages = np.divide(np.sum(results, axis = 0), shared_acc_counts)
 		
+		#Skip SD if output is matrix
 		if style == "tsv":
 			aai_ests = numpy_kaai_to_aai(jaccard_averages)
 			
 			if do_sd:
+				#find diffs from means; this includes indicies corresponding to unshared SCPs that should not be included. 
 				results = results - jaccard_averages
-				results[np.logical_not(_tpres[local_qgak[q][0], :])] = 0
+				
+				#fix those corresponding indicies to not contribute to the final SD.
+				results[np.logical_not(_tpres[_qgak[q][0], :])] = 0
+				#results[np.nonzero(has_accs == 0)] = 0
+				
+				#Square them; 0^2 = 0, so we don't have to think about the fixed indices any more.
 				results = np.square(results)
+				#Sum squares and divide by shared acc. count, the sqrt to get SD.
 				jaccard_SDs = np.sqrt(np.divide(np.sum(results, axis = 0), shared_acc_counts))
 				jaccard_SDs = np.round(jaccard_SDs, 4).astype(str)
+				
+			no_hit = np.where(shared_acc_counts == 0)
 			
-			possible_hits = np.minimum(local_qgak[q][0].shape[0], _tct).astype(str)
+			#_qgak[q][0] is the query acc count
+			possible_hits = np.minimum(_qgak[q][0].shape[0], _tct).astype(str)
+			
 			jaccard_averages = np.round(jaccard_averages, 4).astype(str)
 			shared_acc_counts = shared_acc_counts.astype(str)
+			
 			jaccard_averages[no_hit] = "N/A"
 			aai_ests[no_hit] = "N/A"
 			shared_acc_counts[no_hit] = "N/A"
 			possible_hits[no_hit] = "N/A"
+			
 			output_name = os.path.normpath(out_base + "/results/"+qname+"_results.txt")
+		
 			out = open(output_name, "w")
 			out.write("query\ttarget\tavg_jacc_sim\tjacc_SD\tnum_shared_SCPs\tposs_shared_SCPs\tAAI_estimate\n")
 			if do_sd:
@@ -3000,20 +2956,16 @@ def on_disk_work_one(task):
 				for i in range(0, len(aai_ests)):
 					out.write(qname+"\t"+_tnames[i]+"\t"+jaccard_averages[i]+"\t"+"N/A"+"\t"+shared_acc_counts[i]+"\t"+possible_hits[i]+"\t"+aai_ests[i]+"\n")
 			out.close()
+			
 		else:
 			aai_ests = numpy_kaai_to_aai_just_nums(jaccard_averages, as_float = True)
 			aai_ests[no_hit] = 0
-			output_rows.append("\t".join(str(value) for value in aai_ests))
-
+			print(*aai_ests, sep = "\t", file = outwriter)
+		
+		prog_queue.put(q)
+		
 	curs.close()
-	if style == "matrix":
-		if len(query_grouping) == 0:
-			return (len(query_grouping), None)
-		with open(group_id, "w") as outwriter:
-			if len(output_rows) > 0:
-				outwriter.write("\n".join(output_rows) + "\n")
-		return (len(query_grouping), group_id)
-	return (len(query_grouping), None)
+	prog_queue.put("done")
 	
 def on_disk_work_two(i):
 	outwriter.close()
@@ -3055,7 +3007,6 @@ class db_db_remake:
 			
 		self.query_names = None
 		self.target_names = None
-		self.num_result_groups = 0
 		
 		self.num_queries = None
 		self.num_targets = None
@@ -3129,7 +3080,7 @@ class db_db_remake:
 			self.query_gak[genome] = (np.array(self.query_gak[genome][0], dtype = np.int32), np.array(self.query_gak[genome][1], dtype = np.int32))
 		
 		#Split these into ordered groups - this makes joining results at the end easier.
-		query_group_data = []
+		qgak_queue = multiprocessing.Queue()
 		groupings = split_seq_indices(np.arange(self.num_queries), self.threads)
 		group_id = 0
 		for group in groupings:
@@ -3137,11 +3088,12 @@ class db_db_remake:
 			for i in range(group[0], group[1]):
 				next_set[i] = self.query_gak[i]
 				self.query_gak[i] = None
-			query_group_data.append((group_id, next_set, np.arange(group[0], group[1]),))
+			#this ensures that the selection of qgak and the query index range match
+			qgak_queue.put((group_id, next_set, np.arange(group[0], group[1]),))
 			group_id += 1
 		
-		self.query_gak = query_group_data
-		query_group_data = None
+		self.query_gak = qgak_queue
+		qgak_queue = None
 		
 		#tgt gak is organized by accession first, then genome
 		self.target_gak = np.zeros(shape = (122, self.num_targets), dtype = np.int32)
@@ -3201,42 +3153,54 @@ class db_db_remake:
 		else:
 			print("\nCalculating AAI.")
 		
-		self.num_result_groups = self.count_result_groups()
+		query_groups = []
+		for grouping in split_seq_indices(np.arange(self.num_queries), self.threads):
+			query_groups.append(np.arange(grouping[0], grouping[1]))
+		
+		result_queue = multiprocessing.Queue()
+		remaining_procs = self.threads
+		still_going = True
 		
 		pool = multiprocessing.Pool(self.threads, initializer = one_init, 
 		initargs = (ql, #ql 
 					tl, #tl
 					self.num_targets, #num_tgt
+					self.query_gak, #qgak_queue
 					self.target_gak, #tgak
 					self.target_presence, #tpres
 					self.do_sd, #sd
 					self.style, #sty
 					self.output_base, #output_dir
 					self.store_mat, #store_results
-					None, #progress_queue
+					result_queue, #progress_queue
 					self.query_names, #qnames
 					self.target_names, #tnames
 					tempdir_path,)) #temp_dir
 		
-		some_results = pool.imap(one_work, self.query_gak)
+		some_results = pool.imap(one_work, query_groups)
+		
+		while still_going:
+			item = result_queue.get() 
+			if item == "done":
+				remaining_procs -= 1
+				if remaining_procs == 0:
+					still_going = False
+			else:
+				if self.verbose:
+					tracker.update()
+				else:
+					pass
 		
 		if self.style == "matrix":
 			result_files = []
-			for processed_queries, result_file in some_results:
-				for i in range(0, processed_queries):
-					if self.verbose:
-						tracker.update()
-				if result_file is not None:
-					result_files.append(result_file)
+			
+			for result in pool.map(two_work, range(0, self.threads)):
+				result_files.append(result)
 			
 			pool.close()
 		
 			self.write_mat_from_files(result_files, tempdir_path)
 		else:
-			for processed_queries, result_file in some_results:
-				for i in range(0, processed_queries):
-					if self.verbose:
-						tracker.update()
 			pool.close()
 
 	#This needs to be implemented from existing code.
@@ -3245,12 +3209,18 @@ class db_db_remake:
 		if self.style == "matrix":
 			self.store_mat = False
 			
+		result_queue = multiprocessing.Queue()
+		remaining_procs = self.threads
+		still_going = True
+		
 		if self.verbose:
 			tracker = progress_tracker(total = self.num_queries, message = "Calculating AAI")
 		else:
 			print("\nCalculating AAI")
 		
-		self.num_result_groups = self.count_result_groups()
+		query_groups = []
+		for grouping in split_seq_indices(np.arange(self.num_queries), self.threads):
+			query_groups.append(np.arange(grouping[0], grouping[1]))
 		
 		#query_database_path, target_database_path, num_tgt, query_queue, target_gak, tpres, sd, 
 		#sty, output_dir, progress_queue, qnames, tnames, valids, temp_dir
@@ -3258,56 +3228,45 @@ class db_db_remake:
 		initargs = (self.q, #query_database_path
 					self.t, #target_database_path
 					self.num_targets, #num_tgt
+					self.query_gak, #query_queue
 					self.target_gak, #target_gak
 					self.target_presence, #tpres
 					self.do_sd, #sd
 					self.style, #sty
 					self.output_base, #output_dir
-					None, #progress_queue
+					result_queue, #progress_queue
 					self.query_names, #qnames
 					self.target_names, #tnames
 					self.valids, #valids
 					tempdir_path,)) #temp_dir
 		
-		some_results = pool.imap(on_disk_work_one, self.query_gak)
+		some_results = pool.imap(on_disk_work_one, query_groups)
+		
+		while still_going:
+			item = result_queue.get() 
+			if item == "done":
+				remaining_procs -= 1
+				if remaining_procs == 0:
+					still_going = False
+			else:
+				if self.verbose:
+					tracker.update()
+				else:
+					pass
 		
 		if self.style == "matrix":
 			result_files = []
-			for processed_queries, result_file in some_results:
-				for i in range(0, processed_queries):
-					if self.verbose:
-						tracker.update()
-				if result_file is not None:
-					result_files.append(result_file)
-		else:
-			for processed_queries, result_file in some_results:
-				for i in range(0, processed_queries):
-					if self.verbose:
-						tracker.update()
+			for result in pool.map(on_disk_work_two, range(0, self.threads)):
+				result_files.append(result)
 			
 		pool.close()
 			
 		if self.style == "matrix":
 			self.write_mat_from_files(result_files, tempdir_path)
 			
-	def count_result_groups(self):
-		"""Return the number of non-empty query groups that produce files."""
-		return sum(1 for _, _, query_grouping in self.query_gak if len(query_grouping) > 0)
-
-	def validate_result_files(self, result_files):
-		"""Validate matrix partial result files before combining them."""
-		if len(result_files) != self.num_result_groups:
-			raise RuntimeError("Unexpected number of matrix partial result files.")
-		if len(set(result_files)) != len(result_files):
-			raise RuntimeError("Duplicate matrix partial result files detected.")
-		missing_files = [path for path in result_files if not os.path.exists(path)]
-		if len(missing_files) > 0:
-			raise RuntimeError("Missing matrix partial result files detected.")
-
 	def write_mat_from_files(self, result_files, tempdir_path):
 		#tempdir_path = os.path.normpath(self.output_base+"/temp")
-
-		self.validate_result_files(result_files)
+	
 		result_files = sorted_nicely(result_files)
 		
 		#print("Combining:")
@@ -3315,7 +3274,7 @@ class db_db_remake:
 		#	print(f)
 		
 		if self.verbose:
-			tracker = progress_tracker(total = len(result_files), step_size = 2, message = "Finalizing results.")
+			tracker = progress_tracker(total = self.threads, step_size = 2, message = "Finalizing results.")
 		else:
 			print("\nFinalizing results.")
 		
@@ -3334,7 +3293,7 @@ class db_db_remake:
 				if self.store_mat:
 					#Add the decimals - we don't need to do this is we've been writing line-wise.
 					#values will ALWAYS be 4 digits in this method, so groups of 2 dec. works.
-					cur[i] = re.sub(r"(\d{2})(\d{2})", "\\1.\\2", cur[i])
+					cur[i] = re.sub("(\d{2})(\d{2})", "\\1.\\2", cur[i])
 				#Add in the query name to the row
 				cur[i] = self.query_names[row]+"\t"+cur[i]
 				row += 1
@@ -3876,7 +3835,7 @@ def single_query(qf, tf, output, verbose, threads, do_compress):
 		jacc = intersect/union
 		results.append(jacc)
 		
-	results = np.array(results, dtype = np.float64)
+	results = np.array(results, dtype = np.float_)
 	
 	jacc_mean = np.mean(results)
 	jacc_std = np.std(results)
@@ -4880,3 +4839,5 @@ def main():
 	
 if __name__ == "__main__":
 	main()
+
+	
