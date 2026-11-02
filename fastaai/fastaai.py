@@ -1704,174 +1704,50 @@ def file_v_db_initializer(tgak, tgt_names, tgt_cts, hmm_file, do_compress, tgt_c
 	make_query_db = build_q
 	
 	return _tdb, _tgt_gak, _tname, _tct, hmm_manager, num_tgts, _do_sd, out_base, out_style, db_is_in_mem, make_query_db
+
+	global _tstats
+	if db_is_in_mem:
+		_tstats = m10.load_stats(_tdb, num_tgts)
+	else:
+		with sqlite3.connect(_tdb) as connection:
+			_tstats = m10.load_stats(connection, num_tgts)
 	
 def file_v_db_worker(query_args):
-	#query info for this particular query
 	in_file = query_args[0]
-	
 	in_file.preprocess()
-	
 	qname = in_file.basename
-	
-	do_sd = _do_sd
-	
-	#std dev. calcs are not meaningful with matrix style output.
-	if out_style == "matrix":
-		do_sd = False
-	
-	if do_sd:
-		results = []
-		shared_acc_counts = []
-	else:
-		results = np.zeros(shape = num_tgts, dtype = np.float_)
-		shared_acc_counts = np.zeros(shape = num_tgts, dtype = np.int32)
-	
-	if db_is_in_mem:
-		#The connection is already given as MDB if the db is in mem
-		tconn = _tdb
-	else:
-		#db is on disk and the connection has to be established.
-		tconn = sqlite3.connect(_tdb)
-		
-	tcurs = tconn.cursor()
-		
-	#This is a difference from the DB-first method.
-	acc_idx = generate_accessions_index(forward = True)
-	
-	genome_lists = {}
-	
-	tcurs.row_factory = lambda cursor, row: row[0]
-	
-	
-	if make_query_db:
-		ret = [qname, None, []]
-	else:
-		ret = [qname, None, None]
-	
-	#We need to purge accsessions not in tgt.
-	for acc in in_file.best_hits_kmers:
-		one = in_file.best_hits_kmers[acc]
-		acc_id = acc_idx[acc]
-		
+	connection = _tdb if db_is_in_mem else sqlite3.connect(_tdb)
+	cursor = connection.cursor()
+	acc_index = generate_accessions_index()
+	rows, accessions = [], []
+	stored = [] if make_query_db else None
+	for accession, words in in_file.best_hits_kmers.items():
+		index = acc_index[accession]
 		if make_query_db:
-			ret[2].append((qname, acc_id, one.tobytes(),))
-		
-		#Check working.
-		if acc_id in _tgt_gak:
-
-			kmer_ct = one.shape[0]
-
-			if do_sd:
-				hits = np.zeros(shape = num_tgts, dtype = np.int32)
-				hits[np.nonzero(_tgt_gak[acc_id])] = 1
-				shared_acc_counts.append(hits)
-			else:
-				shared_acc_counts[np.nonzero(_tgt_gak[acc_id])] += 1
-			
-			#SQL has a max binding size of 999, for some reason.
-			if kmer_ct > 998:
-				#Each kmer needs to be a tuple.
-				these_kmers = [(int(kmer),) for kmer in one]
-			
-				temp_name = "_" + qname +"_" + acc
-				temp_name = temp_name.replace(".", "_")
-				
-				tcurs.execute("CREATE TEMP TABLE " + temp_name + " (kmer INTEGER)")
-				tconn.commit()
-				insert_table = "INSERT INTO " + temp_name + " VALUES (?)"
-				tcurs.executemany(insert_table, these_kmers)
-				tconn.commit()
-				join_and_select_sql = "SELECT genomes FROM " + temp_name + " INNER JOIN " + acc + " ON "+ temp_name+".kmer = " + acc+".kmer;"
-
-				set = tcurs.execute(join_and_select_sql).fetchall()
-			else:
-				#kmers must be a list, not a tuple.
-				these_kmers = [int(kmer) for kmer in one]
-				select = "SELECT genomes FROM " + acc + " WHERE kmer IN ({kmers})".format(kmers=','.join(['?']*len(these_kmers)))
-				
-				set = tcurs.execute(select, these_kmers).fetchall()
-				
-			#join results into one bytestring.
-			set = b''.join(set)
-			
-			these_intersections = np.bincount(np.frombuffer(set, dtype = np.int32), minlength = num_tgts)
-			set = None
-			#Add tgt kmer counts to query kmer counts, find union size based on intersection size, cald jacc
-			jacc = np.divide(these_intersections, np.subtract(np.add(_tgt_gak[acc_id], kmer_ct), these_intersections))
-			
-			if do_sd:
-				results.append(jacc)
-			else:
-				results += jacc
-			
-	tcurs.row_factory = None
-	tcurs.close()
-	
-	if do_sd:
-		results = np.vstack(results)
-		has_accs = np.vstack(shared_acc_counts)
-		
-		shared_acc_counts = np.sum(has_accs, axis = 0)
-		
-		#final jacc_means
-		jaccard_averages = np.divide(np.sum(results, axis = 0), shared_acc_counts)
-		
-		aai_ests = numpy_kaai_to_aai(jaccard_averages)
-		
-		#find diffs from means; this includes indicies corresponding to unshared SCPs that should not be included. 
-		results = results - jaccard_averages
-		
-		#fix those corresponding indicies to not contribute to the final SD.
-		results[np.nonzero(has_accs == 0)] = 0
-		
-		#Square them
-		results = np.square(results)
-		#Sum squares and divide by shared acc. count, the sqrt to get SD.
-		jaccard_SDs = np.sqrt(np.divide(np.sum(results, axis = 0), shared_acc_counts))
-		jaccard_SDs = np.round(jaccard_SDs, 4).astype(str)
-				
-	else:
-		#other condition.
-		jaccard_SDs = None
-		jaccard_averages = np.divide(results, shared_acc_counts)
-		#we don't want to pass char arrays to main, so skip this here and do it in main instead.
-		if out_style != "matrix":
-			aai_ests = numpy_kaai_to_aai(jaccard_averages)
-		
-	del results
-
-	#Since the outputs go to separate files, it makes more sense to do them within the worker processes instead of in main.
+			windows, counts, protein = in_file.protein_stats[accession]
+			stored.append((qname, index, words.tobytes(), windows, counts.tobytes(), protein))
+		if index not in _tgt_gak:
+			continue
+		if len(words) > 998:
+			cursor.execute("CREATE TEMP TABLE current_words (kmer INTEGER)")
+			cursor.executemany("INSERT INTO current_words VALUES (?)", [(int(w),) for w in words])
+			matches = cursor.execute("SELECT genomes FROM current_words INNER JOIN " + accession + " USING (kmer)").fetchall()
+			cursor.execute("DROP TABLE current_words")
+		else:
+			query = "SELECT genomes FROM " + accession + " WHERE kmer IN (" + ','.join('?' for w in words) + ")"
+			matches = cursor.execute(query, [int(w) for w in words]).fetchall()
+		postings = np.frombuffer(b''.join(row[0] for row in matches), dtype=np.int32)
+		rows.append(np.bincount(postings, minlength=num_tgts))
+		accessions.append(index)
+	cursor.close()
+	if not db_is_in_mem:
+		connection.close()
+	qstats = m10.file_stats(in_file.protein_stats, acc_index)
+	statistics = m10.query_statistics(np.asarray(rows).reshape(len(rows), num_tgts), np.array(accessions, dtype=np.int32), 0, qstats, _tstats)
+	estimates = m10.convert(statistics['P_hat'])
 	if out_style == "tsv":
-		no_hit = np.where(shared_acc_counts == 0)
-		
-		possible_hits = np.minimum(len(in_file.best_hits_kmers), _tct).astype(str)
-		jaccard_averages = np.round(jaccard_averages, 4).astype(str)
-		shared_acc_counts = shared_acc_counts.astype(str)
-		
-		jaccard_averages[no_hit] = "N/A"
-		aai_ests[no_hit] = "N/A"
-		shared_acc_counts[no_hit] = "N/A"
-		possible_hits[no_hit] = "N/A"
-			
-		output_name = os.path.normpath(out_base + "/"+qname+"_results.txt")
-	
-		out = open(output_name, "w")
-		out.write("query\ttarget\tavg_jacc_sim\tjacc_SD\tnum_shared_SCPs\tposs_shared_SCPs\tAAI_estimate\n")
-		if do_sd:
-			jaccard_SDs[no_hit] = "N/A"
-			for i in range(0, len(aai_ests)):
-				out.write(qname+"\t"+_tname[i]+"\t"+jaccard_averages[i]+"\t"+jaccard_SDs[i]+"\t"+shared_acc_counts[i]+"\t"+possible_hits[i]+"\t"+aai_ests[i]+"\n")
-		else:			
-			for i in range(0, len(aai_ests)):
-				out.write(qname+"\t"+_tname[i]+"\t"+jaccard_averages[i]+"\t"+"N/A"+"\t"+shared_acc_counts[i]+"\t"+possible_hits[i]+"\t"+aai_ests[i]+"\n")
-		out.close()
-
-		
-	#We're just gonna pass this back to the main to print.
-	if out_style == "matrix":
-		ret[1] = jaccard_averages
-	
-	return ret
+		m10.write_tsv(os.path.join(out_base, qname + "_results.txt"), qname, _tname, statistics['shared_SCPs'], estimates)
+	return [qname, estimates, stored]
 	
 #Handles both query and target types for a db vs db query
 class file_vs_db_query:
@@ -1934,6 +1810,7 @@ class file_vs_db_query:
 			
 			self.t_curs.execute("CREATE TABLE genome_index AS SELECT * FROM targets.genome_index")
 			self.t_curs.execute("CREATE TABLE genome_acc_kmer_counts AS SELECT * FROM targets.genome_acc_kmer_counts")
+			self.t_curs.execute("CREATE TABLE genome_acc_stats AS SELECT * FROM targets.genome_acc_stats")
 			self.t_curs.execute("CREATE INDEX t_gi ON genome_index (gen_id)")
 			self.t_curs.execute("CREATE INDEX t_gak ON genome_acc_kmer_counts (accession)")
 		
@@ -2031,11 +1908,12 @@ class file_vs_db_query:
 			else:
 				query_db_conn = sqlite3.connect(qdb_path)
 				q_curs = query_db_conn.cursor()
-				q_curs.execute("CREATE TABLE storage (genome INTEGER, accession INTEGER, kmers array)")
+				q_curs.execute("CREATE TABLE storage (genome INTEGER, accession INTEGER, kmers array, windows INTEGER, group_counts BLOB, protein TEXT)")
 				q_curs.execute("CREATE INDEX store_idx ON storage (genome, accession)")
 				query_genome_index = []
 				qgi_ct = 0
 				qg_gak = []
+				qg_stats = []
 		
 		if self.verbose:
 			tracker = progress_tracker(total = num_queries, message = "Calculating AAI...", one_line = True)
@@ -2043,6 +1921,8 @@ class file_vs_db_query:
 		if self.style == "matrix":
 			output_name = os.path.normpath(self.output + "/FastAAI_matrix.txt")
 			output = open(output_name, "w")
+			distance_output = open(os.path.join(self.output, "FastAAI_t_hat_matrix.txt"), "w")
+			print("query_genome", *tgt_ids, sep="\t", file=distance_output)
 			#needs target names.
 			print("query_genome", *tgt_ids, sep = "\t", file = output)
 		
@@ -2069,28 +1949,33 @@ class file_vs_db_query:
 				tracker.update()
 			qname = result[0]
 			if self.style == "matrix":
-				printout = numpy_kaai_to_aai(result[1])
+				printout = result[1]["AAI"]
 				print(qname, *printout, sep = "\t", file = output)
+				print(qname, *result[1]["t_hat"], sep="\t", file=distance_output)
 				
 			if self.do_db_build:
 				query_genome_index.append((qname, qgi_ct, len(result[2]),))
 				for row in result[2]:
 					num_kmers = int(len(row[2])/4)
 					qg_gak.append((qgi_ct, row[1], num_kmers,))
+					qg_stats.append((qgi_ct, row[1], row[3], row[4], row[5]))
 				qgi_ct += 1
-				q_curs.executemany("INSERT INTO storage VALUES (?, ?, ?)", result[2])
+				q_curs.executemany("INSERT INTO storage VALUES (?, ?, ?, ?, ?, ?)", result[2])
 				query_db_conn.commit()
 				
 		pool.close()
 		
 		if self.style == "matrix":
 			output.close()
+			distance_output.close()
 			
 		if self.do_db_build:
 			q_curs.execute("CREATE TABLE genome_index (genome text, gen_id integer, protein_count integer)")
 			q_curs.execute("CREATE TABLE genome_acc_kmer_counts (genome integer, accession integer, count integer)")
 			q_curs.executemany("INSERT INTO genome_index VALUES (?,?,?)", query_genome_index)
 			q_curs.executemany("INSERT INTO genome_acc_kmer_counts VALUES (?,?,?)", qg_gak)
+			m10.create_stats_table(q_curs)
+			q_curs.executemany("INSERT INTO genome_acc_stats VALUES (?,?,?,?,?)", qg_stats)
 			query_db_conn.commit()
 			
 			acc_id_to_name = generate_accessions_index(forward = False)
@@ -2162,90 +2047,12 @@ class file_vs_db_query:
 		#Clean up the db connections; free the mem.
 		self.clean_up()
 	
-def numpy_kaai_to_aai(kaai_array):
-	#aai_hat = (-0.3087057 + 1.810741 * (np.exp(-(-0.2607023 * np.log(kaai))**(1/3.435))))*100
-	
-	#Protect the original jaccard averages memory item
-	aai_hat_array = kaai_array.copy()
-	
-	non_zero = np.where(aai_hat_array > 0)
-	is_zero  = np.where(aai_hat_array <= 0)
-	
-	#I broke this down into its original components
-	#Avoid zeroes in log - still actually works, but it produces warnings I don't want to see.
-	aai_hat_array[non_zero] = np.log(aai_hat_array[non_zero])
-	
-	aai_hat_array = np.multiply(np.subtract(np.multiply(np.exp(np.negative(np.power(np.multiply(aai_hat_array, -0.2607023), (1/3.435)))), 1.810741), 0.3087057), 100)
-	'''
-	Same as the above, broken down into easier-to-follow steps.
-	aai_hat_array = np.multiply(aai_hat_array, -0.2607023)
-	aai_hat_array = np.power(aai_hat_array, (1/3.435))
-	aai_hat_array = np.negative(aai_hat_array)
-	aai_hat_array = np.exp(aai_hat_array)
-	aai_hat_array = np.multiply(aai_hat_array, 1.810741)
-	aai_hat_array = np.subtract(aai_hat_array, 0.3087057)
-	aai_hat_array = np.multiply(aai_hat_array, 100)
-	'''
-	
-	#<30 and >90 values
-	smol = np.where(aai_hat_array < 30)
-	big  = np.where(aai_hat_array > 90)
-	
-	aai_hat_array = np.round(aai_hat_array, 2)
-	
-	#Convert to final printables
-	aai_hat_array = aai_hat_array.astype(str)
-	aai_hat_array[smol] = "<30%"
-	aai_hat_array[big]  = ">90%"
-	#The math of the above ends up with zero values being big, so we fix those.
-	aai_hat_array[is_zero] = "<30%"
-	
-	return aai_hat_array
+def numpy_kaai_to_aai(values):
+	return m10.convert(values)['AAI'].astype(str)
 	
 #Also includes a multiply by 100 and type conversion compared to original - this is some silliness for saving memory.
-def numpy_kaai_to_aai_just_nums(kaai_array, as_float = False):
-	#aai_hat = (-0.3087057 + 1.810741 * (np.exp(-(-0.2607023 * np.log(kaai))**(1/3.435))))*100
-	
-	#Protect the original jaccard averages memory item
-	aai_hat_array = kaai_array.copy()
-	
-	non_zero = np.where(aai_hat_array > 0)
-	is_zero  = np.where(aai_hat_array <= 0)
-	
-	#I broke this down into its original components
-	#Avoid zeroes in log - still actually works, but it produces warnings I don't want to see.
-	aai_hat_array[non_zero] = np.log(aai_hat_array[non_zero])
-	
-	aai_hat_array = np.multiply(np.subtract(np.multiply(np.exp(np.negative(np.power(np.multiply(aai_hat_array, -0.2607023), (1/3.435)))), 1.810741), 0.3087057), 100)
-	'''
-	Same as the above, broken down into easier-to-follow steps.
-	aai_hat_array = np.multiply(aai_hat_array, -0.2607023)
-	aai_hat_array = np.power(aai_hat_array, (1/3.435))
-	aai_hat_array = np.negative(aai_hat_array)
-	aai_hat_array = np.exp(aai_hat_array)
-	aai_hat_array = np.multiply(aai_hat_array, 1.810741)
-	aai_hat_array = np.subtract(aai_hat_array, 0.3087057)
-	aai_hat_array = np.multiply(aai_hat_array, 100)
-	'''
-	
-	aai_hat_array = np.round(aai_hat_array, 2)
-	
-	#<30 and >90 values
-	smol = np.where(aai_hat_array < 30)
-	big  = np.where(aai_hat_array > 90)
-	
-	#We can find these later.
-	aai_hat_array[smol] = 15
-	aai_hat_array[big]  = 95
-	
-	if as_float:
-		aai_hat_array = np.round(aai_hat_array, 2)
-	else:
-		aai_hat_array = np.multiply(aai_hat_array, 100)
-		aai_hat_array = np.round(aai_hat_array, 2)
-		aai_hat_array = aai_hat_array.astype(np.int16)
-	
-	return aai_hat_array
+def numpy_kaai_to_aai_just_nums(values, as_float=False):
+	return m10.convert(values)['AAI']
 
 	
 def curtime():
@@ -2579,7 +2386,9 @@ def parse_accession(acc):
 		
 		indexer += 1
 		
-	tl = np.array(tl, dtype = object)
+	postings = np.empty(len(tl), dtype=object)
+	postings[:] = tl
+	tl = postings
 			
 	for q in ql:
 		if acc_id in ql[q]:
@@ -2593,7 +2402,9 @@ def parse_accession(acc):
 	return([acc, out_file])
 			
 #all of this is exclusive to the in-mem approach for db db query
-def one_init(ql, tl, num_tgt, qgak_queue, tgak, tpres, sd, sty, output_dir, store_results, progress_queue, qnames, tnames, temp_dir):
+def one_init(ql, tl, num_tgt, qgak_queue, tgak, tpres, sd, sty, output_dir, store_results, progress_queue, qnames, tnames, temp_dir, qstats, tstats):
+	global _qstats, _tstats
+	_qstats, _tstats = qstats, tstats
 	global _ql
 	_ql = ql
 	global _tl
@@ -2650,6 +2461,11 @@ def one_init(ql, tl, num_tgt, qgak_queue, tgak, tpres, sd, sty, output_dir, stor
 	
 	global _tnames
 	_tnames = tnames
+
+	global distance_holder, distance_outwriter
+	distance_holder = []
+	if not store and style == "matrix":
+		distance_outwriter = open(group_id + ".t", "w")
 	
 def one_work(placeholder):	
 	for q in query_grouping:
@@ -2669,95 +2485,33 @@ def one_work(placeholder):
 				
 		results = np.vstack(results)
 		
-		target_kmer_counts = _tgak[_qgak[q][0], :]
-		
-		#unions = size(A) + size(B) - size(intersections(A, B)) 
-		#unions = target_kmer_counts + query_kmers_by_acc - intersections
-		unions = np.subtract(np.add(target_kmer_counts, _qgak[q][1][:, None]), results)
-		
-		#These are now jaccards, not #intersections
-		results = np.divide(results, unions)
-		
-		shared_acc_counts = np.sum(_tpres[_qgak[q][0], :], axis = 0)
-		
-		no_hit = np.where(shared_acc_counts == 0)
-		
-		jaccard_averages = np.divide(np.sum(results, axis = 0), shared_acc_counts)
-
-		#Skip SD if output is matrix
+		statistics = m10.query_statistics(results, _qgak[q][0], q, _qstats, _tstats)
+		estimates = m10.convert(statistics['P_hat'])
 		if style == "tsv":
-			aai_ests = numpy_kaai_to_aai(jaccard_averages)
-
-			if do_sd:
-				#find diffs from means; this includes indicies corresponding to unshared SCPs that should not be included. 
-				results = results - jaccard_averages
-				
-				#fix those corresponding indicies to not contribute to the final SD.
-				results[np.logical_not(_tpres[_qgak[q][0], :])] = 0
-				#results[np.nonzero(has_accs == 0)] = 0
-				
-				#Square them; 0^2 = 0, so we don't have to think about the fixed indices any more.
-				results = np.square(results)
-				#Sum squares and divide by shared acc. count, the sqrt to get SD.
-				jaccard_SDs = np.sqrt(np.divide(np.sum(results, axis = 0), shared_acc_counts))
-				jaccard_SDs = np.round(jaccard_SDs, 4).astype(str)
-				
-			no_hit = np.where(shared_acc_counts == 0)
-			
-			#addtl.shape[0] is the query acc count
-			possible_hits = np.minimum(_qgak[q][0].shape[0], _tct).astype(str)
-			
-			jaccard_averages = np.round(jaccard_averages, 4).astype(str)
-			shared_acc_counts = shared_acc_counts.astype(str)
-			
-			jaccard_averages[no_hit] = "N/A"
-			aai_ests[no_hit] = "N/A"
-			shared_acc_counts[no_hit] = "N/A"
-			possible_hits[no_hit] = "N/A"
-				
 			qname = _qnames[q]
-				
-			output_name = os.path.normpath(out_base + "/results/"+qname+"_results.txt")
-		
-			out = open(output_name, "w")
-			out.write("query\ttarget\tavg_jacc_sim\tjacc_SD\tnum_shared_SCPs\tposs_shared_SCPs\tAAI_estimate\n")
-			if do_sd:
-				jaccard_SDs[no_hit] = "N/A"
-				for i in range(0, len(aai_ests)):
-					out.write(qname+"\t"+_tnames[i]+"\t"+jaccard_averages[i]+"\t"+jaccard_SDs[i]+"\t"+shared_acc_counts[i]+"\t"+possible_hits[i]+"\t"+aai_ests[i]+"\n")
-			else:			
-				for i in range(0, len(aai_ests)):
-					out.write(qname+"\t"+_tnames[i]+"\t"+jaccard_averages[i]+"\t"+"N/A"+"\t"+shared_acc_counts[i]+"\t"+possible_hits[i]+"\t"+aai_ests[i]+"\n")
-			out.close()
-			
-			
+			name = os.path.join(out_base, "results", qname + "_results.txt")
+			m10.write_tsv(name, qname, _tnames, statistics['shared_SCPs'], estimates)
+		elif store:
+			holder.append(estimates['AAI'])
+			distance_holder.append(estimates['t_hat'])
 		else:
-			if store:
-				aai_ests = numpy_kaai_to_aai_just_nums(jaccard_averages, as_float = False)
-				aai_ests[no_hit] = 0
-				#add zeros at misses/NAs
-				holder.append(aai_ests)
-			else:
-				aai_ests = numpy_kaai_to_aai_just_nums(jaccard_averages, as_float = True)
-				aai_ests[no_hit] = 0
-				print(*aai_ests, sep = "\t", file = outwriter)
-		
+			print(*estimates['AAI'], sep="\t", file=outwriter)
+			print(*estimates['t_hat'], sep="\t", file=distance_outwriter)
 		prog_queue.put(q)
-	
 	prog_queue.put("done")
-	
-	return None
 
 def two_work(i):
 	if store:
-		hold_together = np.vstack(holder)
-		np.savetxt(group_id, hold_together, delimiter = "\t", fmt='%4d')
+		np.savetxt(group_id, np.vstack(holder), delimiter="\t", fmt="%.17g")
+		np.savetxt(group_id + ".t", np.vstack(distance_holder), delimiter="\t", fmt="%.17g")
 	else:
 		outwriter.close()
-		
+		distance_outwriter.close()
 	return group_id
 	
-def on_disk_init(query_database_path, target_database_path, num_tgt, query_queue, target_gak, tpres, sd, sty, output_dir, progress_queue, qnames, tnames, valids, temp_dir):
+def on_disk_init(query_database_path, target_database_path, num_tgt, query_queue, target_gak, tpres, sd, sty, output_dir, progress_queue, qnames, tnames, valids, temp_dir, qstats, tstats):
+	global _qstats, _tstats
+	_qstats, _tstats = qstats, tstats
 	global database
 	database = sqlite3.connect(":memory:")
 	
@@ -2817,6 +2571,10 @@ def on_disk_init(query_database_path, target_database_path, num_tgt, query_queue
 	
 	global _valids
 	_valids = valids
+
+	global distance_outwriter
+	if style == "matrix":
+		distance_outwriter = open(group_id + ".t", "w")
 	
 def on_disk_work_one(placeholder):
 	curs = database.cursor()
@@ -2866,77 +2624,21 @@ def on_disk_work_one(placeholder):
 			
 		results = np.vstack(results)
 		
-		target_kmer_counts = _tgak[_qgak[q][0], :]
-		
-		#unions = size(A) + size(B) - size(intersections(A, B)) 
-		#unions = target_kmer_counts + query_kmers_by_acc - intersections
-		unions = np.subtract(np.add(target_kmer_counts, _qgak[q][1][:, None]), results)
-		
-		#These are now jaccards, not #intersections
-		results = np.divide(results, unions)
-
-		shared_acc_counts = np.sum(_tpres[_qgak[q][0], :], axis = 0)
-		
-		no_hit = np.where(shared_acc_counts == 0)
-		
-		jaccard_averages = np.divide(np.sum(results, axis = 0), shared_acc_counts)
-		
-		#Skip SD if output is matrix
+		statistics = m10.query_statistics(results, _qgak[q][0], q, _qstats, _tstats)
+		estimates = m10.convert(statistics['P_hat'])
 		if style == "tsv":
-			aai_ests = numpy_kaai_to_aai(jaccard_averages)
-			
-			if do_sd:
-				#find diffs from means; this includes indicies corresponding to unshared SCPs that should not be included. 
-				results = results - jaccard_averages
-				
-				#fix those corresponding indicies to not contribute to the final SD.
-				results[np.logical_not(_tpres[_qgak[q][0], :])] = 0
-				#results[np.nonzero(has_accs == 0)] = 0
-				
-				#Square them; 0^2 = 0, so we don't have to think about the fixed indices any more.
-				results = np.square(results)
-				#Sum squares and divide by shared acc. count, the sqrt to get SD.
-				jaccard_SDs = np.sqrt(np.divide(np.sum(results, axis = 0), shared_acc_counts))
-				jaccard_SDs = np.round(jaccard_SDs, 4).astype(str)
-				
-			no_hit = np.where(shared_acc_counts == 0)
-			
-			#_qgak[q][0] is the query acc count
-			possible_hits = np.minimum(_qgak[q][0].shape[0], _tct).astype(str)
-			
-			jaccard_averages = np.round(jaccard_averages, 4).astype(str)
-			shared_acc_counts = shared_acc_counts.astype(str)
-			
-			jaccard_averages[no_hit] = "N/A"
-			aai_ests[no_hit] = "N/A"
-			shared_acc_counts[no_hit] = "N/A"
-			possible_hits[no_hit] = "N/A"
-			
-			output_name = os.path.normpath(out_base + "/results/"+qname+"_results.txt")
-		
-			out = open(output_name, "w")
-			out.write("query\ttarget\tavg_jacc_sim\tjacc_SD\tnum_shared_SCPs\tposs_shared_SCPs\tAAI_estimate\n")
-			if do_sd:
-				jaccard_SDs[no_hit] = "N/A"
-				for i in range(0, len(aai_ests)):
-					out.write(qname+"\t"+_tnames[i]+"\t"+jaccard_averages[i]+"\t"+jaccard_SDs[i]+"\t"+shared_acc_counts[i]+"\t"+possible_hits[i]+"\t"+aai_ests[i]+"\n")
-			else:			
-				for i in range(0, len(aai_ests)):
-					out.write(qname+"\t"+_tnames[i]+"\t"+jaccard_averages[i]+"\t"+"N/A"+"\t"+shared_acc_counts[i]+"\t"+possible_hits[i]+"\t"+aai_ests[i]+"\n")
-			out.close()
-			
+			name = os.path.join(out_base, "results", qname + "_results.txt")
+			m10.write_tsv(name, qname, _tnames, statistics['shared_SCPs'], estimates)
 		else:
-			aai_ests = numpy_kaai_to_aai_just_nums(jaccard_averages, as_float = True)
-			aai_ests[no_hit] = 0
-			print(*aai_ests, sep = "\t", file = outwriter)
-		
+			print(*estimates['AAI'], sep="\t", file=outwriter)
+			print(*estimates['t_hat'], sep="\t", file=distance_outwriter)
 		prog_queue.put(q)
-		
 	curs.close()
 	prog_queue.put("done")
 	
 def on_disk_work_two(i):
 	outwriter.close()
+	distance_outwriter.close()
 	return group_id
 
 def sorted_nicely(l):
@@ -3071,6 +2773,8 @@ class db_db_remake:
 	
 		self.target_presence = self.target_gak > 0
 		self.target_presence = self.target_presence.astype(bool)
+		self.query_stats = m10.load_stats(self.conn, self.num_queries, "queries")
+		self.target_stats = m10.load_stats(self.conn, self.num_targets, "targets")
 	
 	#This needs to have a TSV write method
 	def load_in_mem(self):
@@ -3143,7 +2847,7 @@ class db_db_remake:
 					result_queue, #progress_queue
 					self.query_names, #qnames
 					self.target_names, #tnames
-					tempdir_path,)) #temp_dir
+					tempdir_path, self.query_stats, self.target_stats,)) #temp_dir
 		
 		some_results = pool.imap(one_work, query_groups)
 		
@@ -3206,7 +2910,7 @@ class db_db_remake:
 					self.query_names, #qnames
 					self.target_names, #tnames
 					self.valids, #valids
-					tempdir_path,)) #temp_dir
+					tempdir_path, self.query_stats, self.target_stats,)) #temp_dir
 		
 		some_results = pool.imap(on_disk_work_one, query_groups)
 		
@@ -3233,57 +2937,18 @@ class db_db_remake:
 			self.write_mat_from_files(result_files, tempdir_path)
 			
 	def write_mat_from_files(self, result_files, tempdir_path):
-		#tempdir_path = os.path.normpath(self.output_base+"/temp")
-	
 		result_files = sorted_nicely(result_files)
-		
-		#print("Combining:")
-		#for f in result_files:
-		#	print(f)
-		
-		if self.verbose:
-			tracker = progress_tracker(total = self.threads, step_size = 2, message = "Finalizing results.")
-		else:
-			print("\nFinalizing results.")
-		
-		output_file = os.path.normpath(self.output+"/FastAAI_matrix.txt")
-		final_outwriter = open(output_file, "w")
-		print("query_genome\t"+'\t'.join(self.target_names), file = final_outwriter)
-		
-		row = 0
-			
-		for f in result_files:
-			fh = open(f, "r")
-			cur = fh.readlines()
-			fh.close()
-			
-			for i in range(0, len(cur)):
-				if self.store_mat:
-					#Add the decimals - we don't need to do this is we've been writing line-wise.
-					#values will ALWAYS be 4 digits in this method, so groups of 2 dec. works.
-					cur[i] = re.sub("(\d{2})(\d{2})", "\\1.\\2", cur[i])
-				#Add in the query name to the row
-				cur[i] = self.query_names[row]+"\t"+cur[i]
-				row += 1
-			
-			final_outwriter.write(''.join(cur))
-			cur = None	
-			
-			try:
-				os.remove(f)
-			except:
-				pass
-			
-			if self.verbose:
-				tracker.update()
-		
-		final_outwriter.close()
-		
-		try:
-			if len(os.listdir(tempdir_path)) == 0:
-				shutil.rmtree(tempdir_path)
-		except:
-			pass
+		for suffix, filename in [("", "FastAAI_matrix.txt"), (".t", "FastAAI_t_hat_matrix.txt")]:
+			with open(os.path.join(self.output, filename), "w") as output:
+				print("query_genome", *self.target_names, sep="\t", file=output)
+				row = 0
+				for partial in result_files:
+					with open(partial + suffix) as stream:
+						for line in stream:
+							output.write(self.query_names[row] + "\t" + line)
+							row += 1
+					os.remove(partial + suffix)
+		shutil.rmtree(tempdir_path)
 		
 	def close(self):
 		self.curs.close()
@@ -3741,19 +3406,11 @@ def single_query_opts():
 	
 	return parser, args
 
-def kaai_to_aai(kaai):
-	# Transform the kAAI into estimated AAI values
-	aai_hat = (-0.3087057 + 1.810741 * (np.exp(-(-0.2607023 * np.log(kaai))**(1/3.435))))*100
-	
-	return aai_hat
+def kaai_to_aai(value):
+	return m10.convert(np.array([value]))['AAI'][0]
 	
 #This one's unique. It doesn't do anything with the DB, which means it doesn't access any other functionality outside of the input_file class. It just advances a pair of inputs in parallel and does intersections.
 def single_query(qf, tf, output, verbose, threads, do_compress):	
-	
-	if qf.identifiers[0] == tf.identifiers[0]:
-		print("You've selected the same query and target genome. The AAI is 100%.")
-		print("FastAAI exiting.")
-		return None
 	
 	statuses = ["genome", "protein", "protein and hmm"]
 	query_stat = statuses.index(qf.status)
@@ -3787,48 +3444,16 @@ def single_query(qf, tf, output, verbose, threads, do_compress):
 	query = results[0]
 	target = results[1]
 	
-	print(query.partial_timings())
-	print(target.partial_timings())
-	
-	#One of the printouts
-	max_poss_prots = max(len(query.best_hits_kmers), len(target.best_hits_kmers))
-	
-	accs_to_view = set(query.best_hits_kmers.keys()).intersection(set(target.best_hits_kmers.keys()))
-	
-	results = []
-	for acc in accs_to_view:
-		intersect = np.intersect1d(query.best_hits_kmers[acc], target.best_hits_kmers[acc])
-		intersect = intersect.shape[0]
-		union = query.best_hits_kmers[acc].shape[0] + target.best_hits_kmers[acc].shape[0] - intersect
-		jacc = intersect/union
-		results.append(jacc)
-		
-	results = np.array(results, dtype = np.float_)
-	
-	jacc_mean = np.mean(results)
-	jacc_std = np.std(results)
-	actual_prots = len(results)
-	poss_prots = max(len(query.best_hits_kmers), len(target.best_hits_kmers))
-	aai_est = round(kaai_to_aai(jacc_mean), 2)
-	
-	if aai_est > 90:
-		aai_est = ">90%"
-	else:
-		if aai_est < 30:
-			aai_est = "<30%"
-	
-	output = open(name, "w")
-	
-	print("query\ttarget\tavg_jacc_sim\tjacc_SD\tnum_shared_SCPs\tposs_shared_SCPs\tAAI_estimate", file = output)
-	print(qname, tname, round(jacc_mean, 4), round(jacc_std, 4), actual_prots, poss_prots, aai_est, sep = "\t", file = output)
-	
-	output.close()
-	
-	print("query\ttarget\tavg_jacc_sim\tjacc_SD\tnum_shared_SCPs\tposs_shared_SCPs\tAAI_estimate")
-	print(qname, tname, round(jacc_mean, 4), round(jacc_std, 4), actual_prots, poss_prots, aai_est, sep = "\t")
-
-	
-	print("FastAAI single query done! Estimated AAI:", aai_est)
+	index = generate_accessions_index()
+	shared = sorted(set(query.best_hits_kmers) & set(target.best_hits_kmers))
+	intersections = np.array([[len(np.intersect1d(query.best_hits_kmers[acc], target.best_hits_kmers[acc]))] for acc in shared])
+	accessions = np.array([index[acc] for acc in shared], dtype=np.int32)
+	qstats = m10.file_stats(query.protein_stats, index)
+	tstats = m10.file_stats(target.protein_stats, index)
+	statistics = m10.query_statistics(intersections, accessions, 0, qstats, tstats)
+	estimates = m10.convert(statistics['P_hat'])
+	m10.write_tsv(name, qname, [tname], statistics['shared_SCPs'], estimates)
+	print("FastAAI-M10 single query done! Estimated AAI:", estimates['AAI'][0])
 
 def miga_merge_opts():
 	parser = argparse.ArgumentParser(formatter_class=argparse.RawTextHelpFormatter,
@@ -4462,7 +4087,7 @@ def main():
 	selection = sys.argv[1]
 	
 	if selection == "version":
-		sys.exit("FastAAI version=0.1.17")
+		sys.exit("FastAAI-M10 based on FastAAI 0.1.20")
 	
 	if selection not in modules:
 		print("")
