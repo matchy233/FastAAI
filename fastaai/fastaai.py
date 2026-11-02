@@ -3480,6 +3480,7 @@ def merge_db(recipient, donors, donor_file, verbose, threads):
 				
 	genome_index_to_add = []
 	gak_to_add = []
+	stats_to_add = []
 	tables = {}
 	#Donors should always exist, never be created.
 	for d in valid_donors:
@@ -3489,6 +3490,7 @@ def merge_db(recipient, donors, donor_file, verbose, threads):
 		data = curs.execute("SELECT * FROM genome_index").fetchall()
 		tabs = curs.execute("SELECT name FROM sqlite_master").fetchall()
 		gak = curs.execute("SELECT * FROM genome_acc_kmer_counts").fetchall()
+		stats = curs.execute("SELECT * FROM genome_acc_stats").fetchall()
 		curs.close()
 		conn.close()
 		multi_gen_ids[d] = {}
@@ -3510,6 +3512,11 @@ def merge_db(recipient, donors, donor_file, verbose, threads):
 			new_index = multi_gen_ids[d][genome_id]
 			if new_index > -1:
 				gak_to_add.append((new_index, acc_id, kmer_ct,))
+		
+		for genome, accession, windows, counts, protein in stats:
+			new_index = multi_gen_ids[d][genome]
+			if new_index > -1:
+				stats_to_add.append((new_index, accession, windows, counts, protein))
 		
 		tables[d] = []
 		for tab in tabs:
@@ -3571,6 +3578,8 @@ def merge_db(recipient, donors, donor_file, verbose, threads):
 		
 		curs.executemany("INSERT INTO genome_index VALUES (?,?,?)", genome_index_to_add)
 		curs.executemany("INSERT INTO genome_acc_kmer_counts VALUES (?,?,?)", gak_to_add)
+		m10.create_stats_table(curs)
+		curs.executemany("INSERT INTO genome_acc_stats VALUES (?,?,?,?,?)", stats_to_add)
 		
 		curs.execute("CREATE INDEX IF NOT EXISTS kmer_acc ON genome_acc_kmer_counts (genome, accession);")
 		
