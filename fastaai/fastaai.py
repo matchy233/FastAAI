@@ -1921,7 +1921,7 @@ def file_v_db_worker(query_args):
 	query_stats = m10.file_stats(in_file.protein_stats, acc_idx)
 	intersections = np.asarray(intersections).reshape(len(intersections), num_tgts)
 	statistics = m10.query_statistics(intersections, np.array(accessions, dtype = np.int32), 0, query_stats, _tstats)
-	estimates = m10.convert(statistics['P_hat'])
+	estimates = m10.mark_self(m10.convert(statistics['P_hat']), qname, _tname)
 
 	#Since the outputs go to separate files, it makes more sense to do them within the worker processes instead of in main.
 	if out_style == "tsv":
@@ -2668,7 +2668,7 @@ def one_work(task):
 
 			results = np.vstack(results)
 			statistics = m10.query_statistics(results, local_qgak[q][0], q, _qstats, _tstats)
-			estimates = m10.convert(statistics['P_hat'])
+			estimates = m10.mark_self(m10.convert(statistics['P_hat']), _qnames[q], _tnames)
 
 			if style == "tsv":
 				qname = _qnames[q]
@@ -2803,7 +2803,7 @@ def on_disk_work_one(task):
 		
 		results = np.vstack(results)
 		statistics = m10.query_statistics(results, local_qgak[q][0], q, _qstats, _tstats)
-		estimates = m10.convert(statistics['P_hat'])
+		estimates = m10.mark_self(m10.convert(statistics['P_hat']), qname, _tnames)
 		
 		if style == "tsv":
 			output_name = os.path.normpath(out_base + "/results/"+qname+"_results.txt")
@@ -3636,11 +3636,6 @@ def kaai_to_aai(value):
 #This one's unique. It doesn't do anything with the DB, which means it doesn't access any other functionality outside of the input_file class. It just advances a pair of inputs in parallel and does intersections.
 def single_query(qf, tf, output, verbose, threads, do_compress):	
 	
-	if qf.identifiers[0] == tf.identifiers[0]:
-		print("You've selected the same query and target genome. The AAI is 100%.")
-		print("FastAAI exiting.")
-		return None
-	
 	statuses = ["genome", "protein", "protein and hmm"]
 	query_stat = statuses.index(qf.status)
 	target_stat = statuses.index(tf.status)
@@ -3683,7 +3678,7 @@ def single_query(qf, tf, output, verbose, threads, do_compress):
 	qstats = m10.file_stats(query.protein_stats, index)
 	tstats = m10.file_stats(target.protein_stats, index)
 	statistics = m10.query_statistics(intersections, accessions, 0, qstats, tstats)
-	estimates = m10.convert(statistics['P_hat'])
+	estimates = m10.mark_self(m10.convert(statistics['P_hat']), qname, [tname])
 	m10.write_tsv(name, qname, [tname], statistics['shared_SCPs'], estimates)
 	print("FastAAI-M10 single query done! Estimated AAI:", estimates['AAI'][0])
 
